@@ -1,31 +1,62 @@
+import { randomUUID } from "crypto";
+import mongoose from "mongoose";
 import Session from "../models/Session.js";
 import { rebuildParticipant } from "./rebuildParticipant.controller.js";
-import { finalizeSession } from "./finalize.controller.js";
+import { finalizeSessionService } from "../services/finalize.service.js";
 import Chunk from "../models/Chunk.js";
+
+// Avoid noisy logs from polling. We log only when a session's state changes.
+const lastRecordingStateBySessionId = new Map();
+const lastEndedBySessionId = new Map();
+
+const MEETING_CODE_REGEX = /^\d{5}$/;
+
+const generateMeetingCode = () =>
+  String(Math.floor(10000 + Math.random() * 90000));
+
+const createUniqueMeetingCode = async (maxAttempts = 20) => {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const code = generateMeetingCode();
+    const exists = await Session.exists({ meetingCode: code });
+    if (!exists) return code;
+  }
+  throw new Error("Could not allocate unique meeting code");
+};
+
+const findSessionBySelector = async (selector) => {
+  if (!selector) return null;
+  const value = String(selector).trim();
+  if (!value) return null;
+
+  if (MEETING_CODE_REGEX.test(value)) {
+    return Session.findOne({ meetingCode: value });
+  }
+  if (!mongoose.Types.ObjectId.isValid(value)) {
+    return null;
+  }
+  return Session.findById(value);
+};
 
 /**
  * Start a new live session
  */
 export const startSession = async (req, res) => {
   try {
-    const { channelName } = req.body;
-
-    if (!channelName) {
-      return res.status(400).json({ message: "Channel name is required" });
-    }
+    // One Agora channel per meeting — never reuse a global name (enables unlimited concurrent rooms).
+    const channelName = `pc-${randomUUID()}`;
+    const meetingCode = await createUniqueMeetingCode();
 
     const session = await Session.create({
       channelName,
+      meetingCode,
       host: req.user._id,
-
-      // ✅ ENSURE HOST IS FIRST PARTICIPANT
       participants: [req.user._id],
-
       startTime: new Date(),
       status: "LIVE",
     });
 
     console.log("🎥 Session created:", session._id);
+    console.log("🔢 Meeting code:", meetingCode);
     console.log("👤 Host added to participants");
 
     res.status(201).json({
@@ -41,29 +72,30 @@ export const startSession = async (req, res) => {
   }
 };
 
-
 /**
- * Stop an active session
+ * Stop an active session (Host leaves → meeting ends)
  */
 export const stopSession = async (req, res) => {
   try {
     const { sessionId } = req.body;
 
     if (!sessionId) {
-      return res.status(400).json({ message: "Session ID is required" });
+      return res.status(400).json({ message: "Session ID or code is required" });
     }
 
-    const session = await Session.findById(sessionId);
+    const session = await findSessionBySelector(sessionId);
 
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
     }
 
+    const canonicalSessionId = String(session._id);
+
     if (session.status === "ENDED") {
       return res.status(400).json({ message: "Session already ended" });
     }
 
-    // End session
+    // Mark session ended
     session.endTime = new Date();
     session.duration = Math.floor(
       (session.endTime - session.startTime) / 1000
@@ -72,32 +104,68 @@ export const stopSession = async (req, res) => {
 
     await session.save();
 
-    console.log("🛑 Session ended — auto rebuilding videos");
+    console.log("🛑 Session ended — rebuild & finalize scheduled (waiting for in-flight uploads)");
 
-    // ✅ Get all participant IDs from chunks
-    const participantIds = await Chunk.distinct("userId", { sessionId });
-
-    // ✅ Auto rebuild each participant
-    for (const userId of participantIds) {
-      await rebuildParticipant(
-        { body: { sessionId, userId } },
-        { json: () => {} }
-      );
-    }
-
-    console.log("🎬 All participant videos rebuilt — merging final");
-
-    // ✅ Auto finalize meeting
-    await finalizeSession(
-      { body: { sessionId } },
-      { json: () => {} }
-    );
-
+    // Respond immediately so host gets a fast response
     res.status(200).json({
       success: true,
-      message: "Session ended, rebuild + finalize started",
+      message: "Session ended and finalized successfully",
       session,
     });
+
+    // Run rebuild + finalize after a delay so participant chunk uploads can finish
+    const delayMs = 18 * 1000; // 18s — chunks upload every 5s, give time for last round
+    setTimeout(async () => {
+      try {
+        const participantIds = await Chunk.distinct("userId", {
+          sessionId: canonicalSessionId,
+        });
+        console.log("🎬 Delayed rebuild — participants with chunks:", participantIds.length);
+
+        for (const userId of participantIds) {
+          const mockRes = {
+            _status: 200,
+            _payload: null,
+            status(code) {
+              this._status = code;
+              return this;
+            },
+            json(payload) {
+              this._payload = payload;
+              return this;
+            },
+          };
+
+          try {
+            await rebuildParticipant(
+              { body: { sessionId: canonicalSessionId, userId } },
+              mockRes
+            );
+          } catch (err) {
+            console.warn("⚠️ Rebuild threw for participant, skipping:", {
+              sessionId: canonicalSessionId,
+              userId: String(userId),
+              message: err?.message || String(err),
+            });
+            continue;
+          }
+
+          if (mockRes._status >= 400) {
+            console.warn("⚠️ Rebuild skipped participant:", {
+              sessionId: canonicalSessionId,
+              userId: String(userId),
+              status: mockRes._status,
+              response: mockRes._payload || null,
+            });
+          }
+        }
+
+        console.log("🎬 All participant videos rebuilt — merging final");
+        await finalizeSessionService(canonicalSessionId);
+      } catch (err) {
+        console.error("❌ Delayed rebuild/finalize error:", err);
+      }
+    }, delayMs);
 
   } catch (error) {
     console.error("❌ Stop session error:", error);
@@ -109,7 +177,54 @@ export const stopSession = async (req, res) => {
 };
 
 /**
- * Add participant to a live session
+ * Get session by ID (for participants to poll status, e.g. detect ENDED)
+ */
+export const getSession = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "Session ID or code is required" });
+    }
+
+    const session = await findSessionBySelector(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    const status = session.status;
+    const canonicalSessionId = String(session._id);
+    if (
+      status === "ENDED" &&
+      lastEndedBySessionId.get(canonicalSessionId) !== "ENDED"
+    ) {
+      console.log(`🛑 getSession detected ENDED for session`, {
+        sessionId: canonicalSessionId,
+      });
+      lastEndedBySessionId.set(canonicalSessionId, "ENDED");
+    }
+
+    res.status(200).json({
+      session: {
+        _id: session._id,
+        meetingCode: session.meetingCode || null,
+        status,
+        channelName: session.channelName,
+        startTime: session.startTime,
+      },
+    });
+  } catch (error) {
+    console.error("❌ getSession error:", error);
+    res.status(500).json({
+      message: "Failed to get session",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Add participant to live session
  */
 export const addParticipant = async (req, res) => {
   try {
@@ -120,10 +235,10 @@ export const addParticipant = async (req, res) => {
     }
 
     if (!sessionId) {
-      return res.status(400).json({ message: "Session ID is required" });
+      return res.status(400).json({ message: "Session ID or code is required" });
     }
 
-    const session = await Session.findById(sessionId);
+    const session = await findSessionBySelector(sessionId);
 
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
@@ -133,7 +248,6 @@ export const addParticipant = async (req, res) => {
       return res.status(400).json({ message: "Session is not live" });
     }
 
-    // ✅ Ensure participants array exists
     if (!Array.isArray(session.participants)) {
       session.participants = [];
     }
@@ -154,6 +268,8 @@ export const addParticipant = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      sessionId: session._id,
+      meetingCode: session.meetingCode || null,
       participants: session.participants,
     });
 
@@ -166,9 +282,8 @@ export const addParticipant = async (req, res) => {
   }
 };
 
-
 /**
- * Remove participant from a live session
+ * Remove participant (history preserved)
  */
 export const removeParticipant = async (req, res) => {
   try {
@@ -179,17 +294,14 @@ export const removeParticipant = async (req, res) => {
     }
 
     if (!sessionId) {
-      return res.status(400).json({ message: "Session ID is required" });
+      return res.status(400).json({ message: "Session ID or code is required" });
     }
 
-    const session = await Session.findById(sessionId);
+    const session = await findSessionBySelector(sessionId);
 
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
     }
-
-    // 🚫 DO NOT REMOVE from participants
-    // Participants = history, not live state
 
     console.log("👋 Participant left (history preserved):", req.user._id);
 
@@ -207,7 +319,9 @@ export const removeParticipant = async (req, res) => {
   }
 };
 
-// Host broadcasts recording state
+/**
+ * Host broadcasts recording state
+ */
 export const broadcastRecording = async (req, res) => {
   try {
     const { sessionId, action } = req.body;
@@ -216,9 +330,12 @@ export const broadcastRecording = async (req, res) => {
       return res.status(400).json({ message: "sessionId & action required" });
     }
 
-    await Session.findByIdAndUpdate(sessionId, {
-      recordingState: action,
-    });
+    const session = await findSessionBySelector(sessionId);
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+    session.recordingState = action;
+    await session.save();
 
     console.log(`📡 Recording state updated → ${action}`);
 
@@ -229,21 +346,193 @@ export const broadcastRecording = async (req, res) => {
   }
 };
 
-// Participants read recording state
+/**
+ * Participants read recording state
+ */
 export const getRecordingState = async (req, res) => {
   try {
     const { sessionId } = req.params;
 
-    const session = await Session.findById(sessionId);
+    const session = await findSessionBySelector(sessionId);
 
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
     }
 
-    res.json({
-      state: session.recordingState || "IDLE",
-    });
+    const state = session.recordingState || "IDLE";
+    const canonicalSessionId = String(session._id);
+    const prev = lastRecordingStateBySessionId.get(canonicalSessionId);
+    if (prev !== state) {
+      console.log(`📡 getRecordingState changed → ${state}`, {
+        sessionId: canonicalSessionId,
+      });
+      lastRecordingStateBySessionId.set(canonicalSessionId, state);
+    }
+
+    res.json({ state });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * Get participants with their user details (name, profile photo)
+ */
+export const getParticipants = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "Session ID is required" });
+    }
+
+    // Find session first
+    const session = await findSessionBySelector(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    // Now populate the participants using the session's _id
+    const populatedSession = await Session.findById(session._id).populate(
+      "participants",
+      "name email profilePhoto"
+    );
+
+    const participants = populatedSession?.participants || [];
+    const participantList = participants.map((user) => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      profilePhoto: user.profilePhoto || null,
+    }));
+
+    res.status(200).json({
+      success: true,
+      participants: participantList,
+    });
+  } catch (error) {
+    console.error("❌ getParticipants error:", error);
+    res.status(500).json({
+      message: "Failed to get participants",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Register Agora UID for a participant when they join the Agora channel
+ */
+export const registerAgoraUid = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { agoraUid } = req.body;
+
+    if (!sessionId || !agoraUid) {
+      return res.status(400).json({ message: "Session ID and Agora UID are required" });
+    }
+
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const session = await findSessionBySelector(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    console.log("[registerAgoraUid] Registering Agora UID mapping", {
+      sessionId: session._id,
+      agoraUid,
+      userId: req.user._id,
+      userName: req.user.name || req.user.email,
+      userProfilePhoto: !!req.user.profilePhoto,
+    });
+
+    // Initialize agoraUidMap if not exists
+    if (!Array.isArray(session.agoraUidMap)) {
+      session.agoraUidMap = [];
+    }
+
+    // Remove existing entry for this UID if it exists
+    session.agoraUidMap = session.agoraUidMap.filter(
+      (entry) => entry.agoraUid !== String(agoraUid)
+    );
+
+    // Add the new mapping
+    session.agoraUidMap.push({
+      agoraUid: String(agoraUid),
+      userId: req.user._id,
+      name: req.user.name || req.user.email || "User",
+      profilePhoto: req.user.profilePhoto || null,
+    });
+
+    await session.save();
+
+    console.log("[registerAgoraUid] Successfully registered Agora UID mapping", {
+      sessionId: session._id,
+      agoraUid,
+      userId: req.user._id,
+      mappingSize: session.agoraUidMap.length,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Agora UID registered",
+    });
+  } catch (error) {
+    console.error("❌ registerAgoraUid error:", error);
+    res.status(500).json({
+      message: "Failed to register Agora UID",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Get Agora UID to user mapping for a session
+ */
+export const getAgoraUidMapping = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({ message: "Session ID is required" });
+    }
+
+    const session = await findSessionBySelector(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    const mapping = {};
+    if (Array.isArray(session.agoraUidMap) && session.agoraUidMap.length > 0) {
+      // Convert array to object keyed by agoraUid
+      for (const entry of session.agoraUidMap) {
+        mapping[String(entry.agoraUid)] = {
+          userId: entry.userId ? entry.userId.toString() : null,
+          name: entry.name || "User",
+          profilePhoto: entry.profilePhoto || null,
+        };
+      }
+    }
+
+    console.log("[getAgoraUidMapping] Returning mapping for session", {
+      sessionId: session._id,
+      mappingCount: Object.keys(mapping).length,
+    });
+
+    res.status(200).json({
+      success: true,
+      mapping,
+    });
+  } catch (error) {
+    console.error("❌ getAgoraUidMapping error:", error);
+    res.status(500).json({
+      message: "Failed to get Agora UID mapping",
+      error: error.message,
+    });
   }
 };
