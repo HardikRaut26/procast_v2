@@ -45,6 +45,14 @@ function geminiBackoffMs(status, attempt, responseHeaders) {
       base * Math.pow(1.9, attempt)
     );
   }
+  if (status === 503 || status === 502 || status === 500) {
+    // Server errors: back off more aggressively to avoid hammering overloaded service
+    const base = Number(process.env.GEMINI_TRANSLATE_503_BASE_MS || "15000");
+    return Math.min(
+      Number(process.env.GEMINI_TRANSLATE_503_MAX_MS || "180000"),
+      base * Math.pow(2.0, attempt)
+    );
+  }
   return Math.min(35000, 2000 * Math.pow(1.65, attempt));
 }
 
@@ -152,7 +160,10 @@ async function callGeminiJsonArray({
       const status = e?.response?.status;
       const retryable =
         status === 429 || status === 503 || status === 502 || status === 500;
-      if (retryable && attempt < maxAttempts - 1) {
+      // For 503/502/500 errors, only retry once (fail faster to avoid hammering overloaded service)
+      const isServerError = status === 503 || status === 502 || status === 500;
+      const shouldRetry = retryable && attempt < maxAttempts - 1 && (!isServerError || attempt === 0);
+      if (shouldRetry) {
         let delay = Math.round(
           geminiBackoffMs(status, attempt, e?.response?.headers)
         );
@@ -183,7 +194,7 @@ async function translateStringSliceGemini({
   const maxAttempts = Math.max(
     1,
     maxAttemptsArg ??
-      Number(process.env.GEMINI_TRANSLATE_RETRY_ATTEMPTS || "4")
+      Number(process.env.GEMINI_TRANSLATE_RETRY_ATTEMPTS || "2")
   );
 
   let lastErr = null;
@@ -337,8 +348,8 @@ async function translateOneBatch(slice, targetLanguage, opts) {
 
   if (geminiKey) {
     const geminiQuick = !openAiKey
-      ? Math.max(1, Number(process.env.GEMINI_TRANSLATE_QUICK_ATTEMPTS || "3"))
-      : Math.max(1, Number(process.env.GEMINI_TRANSLATE_RETRY_ATTEMPTS || "4"));
+      ? Math.max(1, Number(process.env.GEMINI_TRANSLATE_QUICK_ATTEMPTS || "2"))
+      : Math.max(1, Number(process.env.GEMINI_TRANSLATE_RETRY_ATTEMPTS || "2"));
     all.push({
       name: "gemini",
       run: () =>
