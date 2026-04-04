@@ -336,7 +336,7 @@ async function translateOneBatch(slice, targetLanguage, opts) {
   }
 
   if (geminiKey) {
-    const geminiQuick = openAiKey
+    const geminiQuick = !openAiKey
       ? Math.max(1, Number(process.env.GEMINI_TRANSLATE_QUICK_ATTEMPTS || "3"))
       : Math.max(1, Number(process.env.GEMINI_TRANSLATE_RETRY_ATTEMPTS || "4"));
     all.push({
@@ -358,8 +358,8 @@ async function translateOneBatch(slice, targetLanguage, opts) {
   } else if (explicit === "gemini") {
     chain = all.filter((x) => x.name === "gemini");
   } else {
-    // Prefer OpenAI when configured, fallback to Gemini
-    const order = ["openai", "gemini"];
+    // Prefer Gemini (free tier) when configured, fallback to OpenAI
+    const order = ["gemini", "openai"];
     chain = order
       .map((n) => all.find((x) => x.name === n))
       .filter(Boolean);
@@ -395,7 +395,7 @@ async function translateStringsBatchedImpl(strings, targetLanguage) {
   const opts = buildProviderOpts();
 
   const defaultBatch =
-    opts.geminiKey && !opts.openAiKey ? "12" : "16";
+    opts.geminiKey && !opts.openAiKey ? "12" : opts.geminiKey ? "12" : "16";
   const batchSize = Math.max(
     1,
     Math.min(80, Number(process.env.TRANSLATION_BATCH_SIZE || defaultBatch))
@@ -404,7 +404,7 @@ async function translateStringsBatchedImpl(strings, targetLanguage) {
   const defaultInter =
     process.env.TRANSLATION_INTER_BATCH_DELAY_MS != null
       ? Number(process.env.TRANSLATION_INTER_BATCH_DELAY_MS)
-      : opts.geminiKey && !opts.openAiKey
+      : opts.geminiKey
         ? 700
         : 150;
   const interBatchDelay = Math.max(0, defaultInter);
