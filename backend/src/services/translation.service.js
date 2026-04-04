@@ -1,4 +1,6 @@
 import axios from "axios";
+import { createHash } from "crypto";
+import TranslationCache from "../models/TranslationCache.js";
 
 function normalizeLang(input) {
   const raw = String(input || "").trim().toLowerCase();
@@ -9,6 +11,61 @@ function normalizeLang(input) {
 /** For API: skip calling translation at all */
 export function skipTranslation(targetLanguage) {
   return normalizeLang(targetLanguage) === "original";
+}
+
+/** Hash source text for cache lookup */
+function hashSourceText(text) {
+  return createHash("sha256").update(text || "").digest("hex");
+}
+
+/** Check if translation exists in cache */
+async function getCachedTranslation(sourceText, targetLanguage) {
+  if (!sourceText || normalizeLang(targetLanguage) === "original") {
+    return null;
+  }
+  try {
+    const hash = hashSourceText(sourceText);
+    const cached = await TranslationCache.findOne({
+      sourceHash: hash,
+      targetLanguage: normalizeLang(targetLanguage),
+    });
+    if (cached) {
+      console.log(
+        `[translate] Cache HIT for "${sourceText.slice(0, 30)}..." → ${normalizeLang(targetLanguage)}`
+      );
+      return cached.translatedText;
+    }
+  } catch (err) {
+    console.warn("[translate] Cache lookup failed:", err.message);
+  }
+  return null;
+}
+
+/** Save translation to cache */
+async function saveCacheTranslation(sourceText, targetLanguage, translatedText, provider = "original") {
+  if (!sourceText || normalizeLang(targetLanguage) === "original") {
+    return;
+  }
+  try {
+    const hash = hashSourceText(sourceText);
+    const lang = normalizeLang(targetLanguage);
+    await TranslationCache.findOneAndUpdate(
+      { sourceHash: hash, targetLanguage: lang },
+      {
+        sourceHash: hash,
+        sourceText,
+        targetLanguage: lang,
+        translatedText,
+        provider,
+      },
+      { upsert: true, new: true }
+    );
+    console.log(
+      `[translate] Cached "${sourceText.slice(0, 30)}..." via ${provider}`
+    );
+  } catch (err) {
+    console.warn("[translate] Cache save failed:", err.message);
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -426,15 +483,62 @@ async function translateStringsBatchedImpl(strings, targetLanguage) {
       await sleep(interBatchDelay);
     }
     const slice = strings.slice(i, i + batchSize);
+
+    // Check cache for each string in this batch
+    const sliceWithCache = await Promise.all(
+      slice.map(async (str) => {
+        const cached = await getCachedTranslation(str, targetLanguage);
+        return { str, cached };
+      })
+    );
+
+    // Separate cached from uncached
+    const uncached = sliceWithCache
+      .map((item, idx) => ({ ...item, originalIdx: idx }))
+      .filter((item) => !item.cached);
+    const cachedItems = sliceWithCache.filter((item) => item.cached);
+
+    // If all are cached, use them
+    if (uncached.length === 0) {
+      results.push(
+        ...sliceWithCache.map((item) => item.cached || item.str)
+      );
+      continue;
+    }
+
+    // Translate only uncached strings
+    let translatedUncached = [];
     try {
-      const translated = await translateOneBatch(slice, targetLanguage, opts);
-      results.push(...translated);
+      const uncachedStrs = uncached.map((item) => item.str);
+      translatedUncached = await translateOneBatch(uncachedStrs, targetLanguage, opts);
+
+      // Save each translation to cache
+      for (let j = 0; j < uncachedStrs.length; j++) {
+        await saveCacheTranslation(
+          uncachedStrs[j],
+          targetLanguage,
+          translatedUncached[j],
+          "openai or gemini"
+        );
+      }
     } catch (e) {
       console.warn(
         `[translate] Batch at offset ${i} exhausted all providers; keeping originals`
       );
-      results.push(...slice);
+      translatedUncached = uncached.map((item) => item.str);
     }
+
+    // Merge cached + translated results in original order
+    const mergedResults = new Array(slice.length);
+    let uncachedIdx = 0;
+    for (let j = 0; j < sliceWithCache.length; j++) {
+      if (sliceWithCache[j].cached) {
+        mergedResults[j] = sliceWithCache[j].cached;
+      } else {
+        mergedResults[j] = translatedUncached[uncachedIdx++];
+      }
+    }
+    results.push(...mergedResults);
   }
   return results;
 }
@@ -450,8 +554,17 @@ export async function translateText(text, targetLanguage) {
   const source = String(text || "");
   if (!source || normalizedTarget === "original") return source;
 
+  // Check cache first
+  const cached = await getCachedTranslation(source, normalizedTarget);
+  if (cached) return cached;
+
   const arr = await translateStringsBatched([source], normalizedTarget);
-  return arr[0] ?? source;
+  const result = arr[0] ?? source;
+
+  // Save to cache after successful translation
+  await saveCacheTranslation(source, normalizedTarget, result, "openai or gemini");
+
+  return result;
 }
 
 export async function translateTranscriptAndSummary({
@@ -555,4 +668,37 @@ export async function translateTranscriptAndSummary({
     translated: !translationError,
     ...(translationError ? { translationError } : {}),
   };
+}
+
+/** Get translation cache statistics */
+export async function getCacheStats() {
+  try {
+    const totalCached = await TranslationCache.countDocuments();
+    const byLanguage = await TranslationCache.aggregate([
+      {
+        $group: {
+          _id: "$targetLanguage",
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+    const byProvider = await TranslationCache.aggregate([
+      {
+        $group: {
+          _id: "$provider",
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+    return {
+      totalCached,
+      byLanguage: Object.fromEntries(byLanguage.map((x) => [x._id, x.count])),
+      byProvider: Object.fromEntries(byProvider.map((x) => [x._id, x.count])),
+    };
+  } catch (err) {
+    console.warn("[translate] Cache stats error:", err.message);
+    return null;
+  }
 }
