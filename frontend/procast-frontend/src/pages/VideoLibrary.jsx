@@ -49,6 +49,7 @@ function Library() {
     { value: "en", label: "English" },
     { value: "hi", label: "Hindi" },
     { value: "mr", label: "Marathi" },
+    { value: "sa", label: "Sanskrit" },
     { value: "es", label: "Spanish" },
     { value: "fr", label: "French" },
     { value: "de", label: "German" },
