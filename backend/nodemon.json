@@ -1,0 +1,14 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": [
+    "*.wav",
+    "*.mp3",
+    "*.json",
+    "*.txt",
+    "*.srt",
+    "tmp",
+    "temp",
+    "uploads"
+  ]
+}

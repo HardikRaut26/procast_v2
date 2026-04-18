@@ -33,6 +33,12 @@ const chunkSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+
+    /** Milliseconds from session `startTime` when this chunk’s capture window began (single global clock). */
+    startTimeMs: {
+      type: Number,
+      default: null,
+    },
   },
   {
     timestamps: true,

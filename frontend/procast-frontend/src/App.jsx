@@ -1,27 +1,29 @@
-import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Profile from "./pages/Profile";
 import ProtectedRoute from "./components/ProtectedRoute";
 import VideoCall from "./pages/VideoCall";
 import Library from "./pages/VideoLibrary";
+import Home from "./pages/Home";
+import Navbar from "./components/Navbar";
 
 function App() {
   return (
     <BrowserRouter>
-      <nav style={{ padding: "10px", borderBottom: "1px solid #ccc", display: "flex", gap: "12px" }}>
-        <Link to="/login">Login</Link>
-        <Link to="/register">Register</Link>
-        <Link to="/profile">Profile</Link>
-        <Link to="/call">Call</Link>
-        <Link to="/library">Library</Link>
-      </nav>
+      <Navbar />
 
       <Routes>
+        {/* Public */}
+        <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+
+        {/* Call */}
         <Route path="/call" element={<VideoCall />} />
 
+        {/* Protected */}
         <Route
           path="/profile"
           element={

@@ -598,12 +598,68 @@ export async function translateTranscriptAndSummary({
 
   const items = Array.isArray(transcript) ? transcript : [];
   const sourceTexts = items.map((t) => String(t?.text ?? ""));
-  let translatedTexts;
+  const summaryObj =
+    meetingSummary && typeof meetingSummary === "object" ? meetingSummary : null;
+
+  const summaryText = String(summaryObj?.summary ?? "");
+  const summaryKeyPoints = Array.isArray(summaryObj?.key_points)
+    ? summaryObj.key_points.map((x) => String(x ?? ""))
+    : [];
+  const summaryDecisions = Array.isArray(summaryObj?.decisions)
+    ? summaryObj.decisions.map((x) => String(x ?? ""))
+    : [];
+  const summaryActionItems = Array.isArray(summaryObj?.action_items)
+    ? summaryObj.action_items.map((a) => {
+        if (a && typeof a === "object") {
+          return {
+            owner: String(a.owner ?? ""),
+            task: String(a.task ?? ""),
+          };
+        }
+        return { owner: "", task: String(a ?? "") };
+      })
+    : [];
+  const summaryActionTasks = summaryActionItems.map((a) => a.task);
+
+  // Translate summary first, then transcript, so summary doesn't get skipped by quota/fallback pressure.
+  const allSourceTexts = [
+    summaryText,
+    ...summaryKeyPoints,
+    ...summaryDecisions,
+    ...summaryActionTasks,
+    ...sourceTexts,
+  ];
+
+  let translatedAll;
   try {
-    translatedTexts = await translateStringsBatched(sourceTexts, lang);
-    const anyOriginal = translatedTexts.some(
-      (t, i) => t === sourceTexts[i] && sourceTexts[i].length > 0
-    );
+    translatedAll = await translateStringsBatched(allSourceTexts, lang);
+    if (!Array.isArray(translatedAll) || translatedAll.length !== allSourceTexts.length) {
+      throw new Error("Translation output length mismatch");
+    }
+  } catch (e) {
+    translationError = e?.message || "Translation failed";
+    translatedAll = allSourceTexts;
+  }
+
+  let cursor = 0;
+  const translatedSummaryText = translatedAll[cursor++] ?? summaryText;
+  const translatedKeyPoints = summaryKeyPoints.map(
+    (_, idx) => translatedAll[cursor + idx] ?? summaryKeyPoints[idx]
+  );
+  cursor += summaryKeyPoints.length;
+  const translatedDecisions = summaryDecisions.map(
+    (_, idx) => translatedAll[cursor + idx] ?? summaryDecisions[idx]
+  );
+  cursor += summaryDecisions.length;
+  const translatedTasks = summaryActionTasks.map(
+    (_, idx) => translatedAll[cursor + idx] ?? summaryActionTasks[idx]
+  );
+  cursor += summaryActionTasks.length;
+  const translatedTexts = sourceTexts.map(
+    (_, idx) => translatedAll[cursor + idx] ?? sourceTexts[idx]
+  );
+
+  if (!translationError) {
     if (
       sourceTexts.some((s) => s.length > 0) &&
       translatedTexts.every((t, i) => t === sourceTexts[i])
@@ -613,9 +669,6 @@ export async function translateTranscriptAndSummary({
         "Fix OpenAI/Gemini billing and wait for rate limits to reset. " +
         "See server logs for details.";
     }
-  } catch (e) {
-    translationError = e?.message || "Translation failed";
-    translatedTexts = sourceTexts;
   }
 
   const translatedTranscript = items.map((t, idx) => ({
@@ -624,41 +677,17 @@ export async function translateTranscriptAndSummary({
   }));
 
   let translatedSummary = meetingSummary || null;
-  if (meetingSummary) {
-    try {
-      const kp = (meetingSummary.key_points || []).map((x) => String(x ?? ""));
-      const dec = (meetingSummary.decisions || []).map((x) => String(x ?? ""));
-      const tasks = (meetingSummary.action_items || []).map((a) =>
-        String(a?.task ?? "")
-      );
-
-      const summaryOut = await translateText(meetingSummary.summary || "", lang);
-      const keyOut = kp.length ? await translateStringsBatched(kp, lang) : [];
-      const decOut = dec.length ? await translateStringsBatched(dec, lang) : [];
-      const tasksOut = tasks.length
-        ? await translateStringsBatched(tasks, lang)
-        : [];
-
-      translatedSummary = {
-        ...meetingSummary,
-        summary: summaryOut,
-        key_points: meetingSummary.key_points?.length
-          ? keyOut
-          : meetingSummary.key_points,
-        decisions: meetingSummary.decisions?.length
-          ? decOut
-          : meetingSummary.decisions,
-        action_items: (meetingSummary.action_items || []).map((a, idx) => ({
-          ...a,
-          task: tasksOut[idx] ?? a?.task ?? "",
-        })),
-      };
-    } catch (e) {
-      if (!translationError) {
-        translationError = `Summary translation: ${e?.message || e}`;
-      }
-      translatedSummary = meetingSummary;
-    }
+  if (summaryObj) {
+    translatedSummary = {
+      ...summaryObj,
+      summary: translatedSummaryText,
+      key_points: translatedKeyPoints,
+      decisions: translatedDecisions,
+      action_items: summaryActionItems.map((a, idx) => ({
+        ...a,
+        task: translatedTasks[idx] ?? a.task ?? "",
+      })),
+    };
   }
 
   return {

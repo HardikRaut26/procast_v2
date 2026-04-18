@@ -28,6 +28,15 @@ export const rebuildParticipant = async (req, res) => {
 
     console.log(`📦 Total chunks: ${chunks.length}`);
 
+    const firstIdx = Number(chunks[0]?.chunkIndex);
+    if (!Number.isFinite(firstIdx) || firstIdx !== 1) {
+      return res.status(409).json({
+        message:
+          "Missing chunk-000001 for this user. Cannot rebuild a valid WebM without the init/header segment.",
+        firstChunkIndex: chunks[0]?.chunkIndex,
+      });
+    }
+
     // Temp workspace
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "procast-"));
     const finalPath = path.join(tempDir, "final.webm");

@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import "./config/loadEnv.js";
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import uploadRoutes from "./routes/upload.routes.js";
@@ -9,8 +9,6 @@ import libraryRoutes from "./routes/library.routes.js";
 
 
 
-
-dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 
