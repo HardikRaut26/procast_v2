@@ -7,6 +7,42 @@ import { isAuthenticated } from "../utils/auth";
 function Home() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [liveStats, setLiveStats] = useState({
+    activeCreators: null,
+    podcastsRecorded: null,
+  });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadStats = async () => {
+      try {
+        const res = await fetch("/api/public-stats");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+        setLiveStats({
+          activeCreators: Number(data?.activeCreators) || 0,
+          podcastsRecorded: Number(data?.podcastsRecorded) || 0,
+        });
+      } catch {
+        // Keep existing static/fallback values on transient failures.
+      }
+    };
+
+    loadStats();
+    const interval = setInterval(loadStats, 10000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const formatCount = (value, fallback) => {
+    if (typeof value !== "number" || Number.isNaN(value)) return fallback;
+    return `${new Intl.NumberFormat("en-US").format(value)}+`;
+  };
 
   const handleGetStartedClick = () => {
     if (isAuthenticated()) {
@@ -14,6 +50,16 @@ function Home() {
     } else {
       navigate("/login");
     }
+  };
+
+  const handleWatchDemoClick = () => {
+    const section = document.getElementById("how-it-works");
+    if (!section) return;
+
+    const offset = 90;
+    const rect = section.getBoundingClientRect();
+    const targetY = rect.top + window.scrollY - offset;
+    window.scrollTo({ top: targetY, behavior: "smooth" });
   };
 
   useEffect(() => {
@@ -63,7 +109,7 @@ function Home() {
                   Start Recording
                 </HoverButton>
               </Link>
-              <HoverButton>
+              <HoverButton onClick={handleWatchDemoClick}>
                 <span style={styles.playIcon}>▶</span>
                 Watch Demo
               </HoverButton>
@@ -187,8 +233,14 @@ function Home() {
       {/* STATS */}
       <section style={styles.statsSection}>
         <div style={styles.statsGrid}>
-          <StatItem number="50K+" label="Active Creators" />
-          <StatItem number="1M+" label="Podcasts Recorded" />
+          <StatItem
+            number={formatCount(liveStats.activeCreators, "50K+")}
+            label="Active Creators"
+          />
+          <StatItem
+            number={formatCount(liveStats.podcastsRecorded, "1M+")}
+            label="Podcasts Recorded"
+          />
           <StatItem number="99.9%" label="Uptime" />
           <StatItem number="4.9★" label="User Rating" />
         </div>
@@ -292,7 +344,7 @@ function AnimatedSection({ children }) {
 }
 
 // Hover Button Component
-function HoverButton({ children, primary, large }) {
+function HoverButton({ children, primary, large, onClick }) {
   const [isHovered, setIsHovered] = useState(false);
 
   const baseStyle = {
@@ -330,6 +382,7 @@ function HoverButton({ children, primary, large }) {
   return (
     <button
       style={primary ? primaryStyle : secondaryStyle}
+      onClick={onClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >

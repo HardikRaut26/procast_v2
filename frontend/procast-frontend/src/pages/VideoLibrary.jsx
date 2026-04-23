@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import api from "../api/axios";
 
 // Copy — change these to customize the page
 const copy = {
-  kicker: "YOUR COLLECTION",
-  title: "Every session, one place.",
-  subtitle: "Watch, download, or remove your meeting recordings. All your calls in a clean, searchable library.",
+  kicker: "RECENT RECORDINGS",
+  title: "A clean, modern session library.",
+  subtitle:
+    "Browse your latest sessions, open recordings instantly, and track files that are still processing.",
   statLabel: "Recordings",
+  autoRefreshActive: "Live updates: ON",
   refresh: "Refresh",
   refreshing: "Refreshing…",
-  searchPlaceholder: "Search by ID or name…",
+  searchPlaceholder: "Search by date, time, or recording ID…",
   errorTitle: "Couldn’t load your library",
   errorHint: "Check your connection and try again.",
   emptyTitle: "Your library is empty",
@@ -17,10 +19,12 @@ const copy = {
   noResultsTitle: "No matches",
   noResultsSub: "Try a different search or clear the search box.",
   cardBadge: "Session",
-  cardIdLabel: "Recording ID",
+  cardDateLabel: "Recorded on",
+  pipelineLabel: "Pipeline status",
   download: "Save to device",
   open: "Watch in new tab",
   delete: "Remove",
+  processing: "Processing",
   deleteConfirm: "Remove this recording? This can’t be undone.",
   deleteFailed: "Couldn’t remove it. Try again.",
 };
@@ -44,6 +48,8 @@ function Library() {
   const [transcriptLanguage, setTranscriptLanguage] = useState("original");
   const [activeTranscriptSessionId, setActiveTranscriptSessionId] = useState("");
 
+  const POLL_MS = 8000;
+
   const transcriptLanguageOptions = [
     { value: "original", label: "Original" },
     { value: "en", label: "English" },
@@ -58,23 +64,32 @@ function Library() {
     { value: "ja", label: "Japanese" },
   ];
 
-  useEffect(() => {
-    loadVideos();
-  }, []);
-
-  const loadVideos = async () => {
+  const loadVideos = useCallback(async ({ silent = false } = {}) => {
     try {
       setError("");
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       const res = await api.get("/library");
-      setVideos(res.data.videos || []);
+      const next = [...(res.data.videos || [])].sort((a, b) => {
+        const aTime = new Date(a?.createdAt || 0).getTime();
+        const bTime = new Date(b?.createdAt || 0).getTime();
+        return bTime - aTime;
+      });
+      setVideos(next);
     } catch (err) {
       console.error("Failed to load library", err);
       setError(copy.errorHint);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadVideos();
+  }, [loadVideos]);
 
   const deleteVideo = async (fileId) => {
     if (!confirm(copy.deleteConfirm)) return;
@@ -175,6 +190,48 @@ function Library() {
     return `${mm}:${ss}.${String(ms).padStart(3, "0")}`;
   };
 
+  const formatRecordingDateTime = (value) => {
+    if (!value) return "Unknown date";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Unknown date";
+    return date.toLocaleString([], {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const isProcessingVideo = (video) => {
+    if (video?.processing === true) return true;
+    return !video?.fileId;
+  };
+
+  const normalizePipelineLogs = (video) => {
+    if (Array.isArray(video?.pipelineLogs) && video.pipelineLogs.length > 0) {
+      return video.pipelineLogs;
+    }
+
+    if (isProcessingVideo(video)) {
+      return [
+        { key: "session-ended", label: "Session ended", state: "done" },
+        { key: "final-video", label: "Final video is being generated", state: "active" },
+      ];
+    }
+
+    return [
+      { key: "final-video", label: "Final video generated", state: "done" },
+      {
+        key: "transcript",
+        label: String(video?.transcriptionStatus || "") === "RUNNING"
+          ? "Transcript is generating"
+          : "Transcript status available",
+        state: String(video?.transcriptionStatus || "") === "RUNNING" ? "active" : "done",
+      },
+    ];
+  };
+
   const openTranscript = useCallback(async (sessionId, language = transcriptLanguage) => {
     if (!sessionId) return;
 
@@ -254,11 +311,52 @@ function Library() {
     openTranscript(activeTranscriptSessionId, transcriptLanguage);
   }, [activeTranscriptSessionId, isTranscriptModalOpen, openTranscript, transcriptLanguage]);
 
-  const filteredVideos = videos.filter((v) =>
-    String(v?.fileId || "")
-      .toLowerCase()
-      .includes(query.trim().toLowerCase())
+  const normalizedQuery = query.trim().toLowerCase();
+
+  const filteredVideos = videos.filter((v) => {
+    if (!normalizedQuery) return true;
+    const dateText = formatRecordingDateTime(v?.createdAt).toLowerCase();
+    const idText = String(v?.fileId || "").toLowerCase();
+    return dateText.includes(normalizedQuery) || idText.includes(normalizedQuery);
+  });
+
+  const sessionNumberByKey = videos
+    .slice()
+    .sort((a, b) => {
+      const aTime = new Date(a?.createdAt || 0).getTime();
+      const bTime = new Date(b?.createdAt || 0).getTime();
+      if (aTime !== bTime) return aTime - bTime;
+      const aKey = String(a?.sessionId || a?.fileId || "");
+      const bKey = String(b?.sessionId || b?.fileId || "");
+      return aKey.localeCompare(bKey);
+    })
+    .reduce((acc, item, index) => {
+      const key = String(item?.sessionId || item?.fileId || "");
+      if (key) {
+        acc[key] = index + 1;
+      }
+      return acc;
+    }, {});
+
+  const hasActiveProcessing = useMemo(
+    () =>
+      videos.some((video) => {
+        if (isProcessingVideo(video)) return true;
+        const logs = normalizePipelineLogs(video);
+        return logs.some((log) => String(log?.state || "") === "active");
+      }),
+    [videos]
   );
+
+  useEffect(() => {
+    if (!hasActiveProcessing) return;
+
+    const interval = setInterval(() => {
+      loadVideos({ silent: true });
+    }, POLL_MS);
+
+    return () => clearInterval(interval);
+  }, [hasActiveProcessing, loadVideos]);
 
   return (
     <div style={styles.page}>
@@ -508,9 +606,14 @@ function Library() {
       <div style={styles.header}>
         <div>
           <p style={styles.kicker}>{copy.kicker}</p>
+          <h1 style={styles.title}>{copy.title}</h1>
+          <p style={styles.subtitle}>{copy.subtitle}</p>
         </div>
 
         <div style={styles.headerRight}>
+          {hasActiveProcessing ? (
+            <div style={styles.liveBadge}>{copy.autoRefreshActive}</div>
+          ) : null}
           <div style={styles.statCard}>
             <p style={styles.statLabel}>{copy.statLabel}</p>
             <p style={styles.statValue}>{videos.length}</p>
@@ -568,105 +671,177 @@ function Library() {
       ) : (
         <div style={styles.grid}>
           {filteredVideos.map((video, idx) => (
+            (() => {
+              const badgeKey = String(video?.sessionId || video?.fileId || "");
+              const sessionNumber =
+                sessionNumberByKey[badgeKey] || idx + 1;
+
+              return (
             <div
-              key={video.fileId}
+              key={video.fileId || String(video.sessionId || idx)}
               style={{ ...styles.card, animationDelay: `${idx * 55}ms` }}
               className="pc-card"
             >
-              <div style={styles.videoFrame}>
-                <video
-                  src={
-                    previewEnabledByFileId[String(video.fileId || "")] && video.fileId
-                      ? `/api/library/${video.fileId}/stream`
-                      : undefined
-                  }
-                  controls
-                  preload="none"
-                  style={styles.video}
-                  onClick={() => enablePreview(video.fileId)}
-                />
-                <div style={styles.badge}>
-                  <span style={styles.badgeDot} />
-                  {copy.cardBadge} {String(idx + 1).padStart(2, "0")}
-                </div>
-              </div>
+              {isProcessingVideo(video) ? (
+                <>
+                  <div style={styles.videoFrameProcessing} className="pc-skeleton">
+                    <div style={styles.processingBar} />
+                    <div style={styles.processingBarSmall} />
+                    <div style={styles.badgeProcessing}>
+                      <span style={styles.badgeDotLive} />
+                      {copy.cardBadge} {String(sessionNumber).padStart(2, "0")} · {copy.processing}
+                    </div>
+                  </div>
 
-              <div style={styles.meta}>
-                <p style={styles.metaLabel}>{copy.cardIdLabel}</p>
-                <p style={styles.metaValue} title={video.fileId}>
-                  {video.fileId}
-                </p>
-              </div>
+                  <div style={styles.meta}>
+                    <p style={styles.metaLabel}>{copy.cardDateLabel}</p>
+                    <p style={styles.metaValue}>{formatRecordingDateTime(video.createdAt)}</p>
+                  </div>
 
-              <div style={styles.actions}>
-                <button
-                  type="button"
-                  onClick={() => downloadVideo(video, idx)}
-                  style={styles.actionBtn}
-                  className="pc-btn"
-                  disabled={downloadingId === String(video?.fileId || "")}
-                >
-                  {downloadingId === String(video?.fileId || "")
-                    ? "Downloading…"
-                    : copy.download}
-                </button>
-                {video.transcriptFileId && (
-                  <button
-                    type="button"
-                    onClick={() => downloadTranscript(video, idx)}
-                    style={styles.actionBtnSecondary}
-                    className="pc-btn"
-                    disabled={
-                      downloadingId === String(video?.transcriptFileId || "")
-                    }
-                  >
-                    {downloadingId === String(video?.transcriptFileId || "")
-                      ? "Preparing…"
-                      : "Transcript (.txt)"}
-                  </button>
-                )}
-                {video.transcriptFileId && (
-                  <button
-                    type="button"
-                    onClick={() => openTranscript(video.sessionId)}
-                    style={styles.actionBtnSecondary}
-                    className="pc-btn"
-                    disabled={
-                      transcriptLoading &&
-                      transcriptLoadingFor === String(video.sessionId || "")
-                    }
-                  >
-                    {transcriptLoading &&
-                    transcriptLoadingFor === String(video.sessionId || "")
-                      ? "Loading…"
-                      : "View transcript"}
-                  </button>
-                )}
-                <a
-                  href="#"
-                  style={{ display: "none" }}
-                />
-                <button
-                  type="button"
-                  onClick={() => watchInNewTab(video)}
-                  style={styles.actionBtnSecondary}
-                  className="pc-btn"
-                  disabled={watchingId === String(video?.fileId || "")}
-                >
-                  {watchingId === String(video?.fileId || "")
-                    ? "Opening…"
-                    : copy.open}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteVideo(video.fileId)}
-                  style={styles.deleteBtn}
-                  className="pc-btn"
-                >
-                  {copy.delete}
-                </button>
-              </div>
+                  <div style={styles.pipelineWrap}>
+                    <p style={styles.pipelineTitle}>{copy.pipelineLabel}</p>
+                    <div style={styles.pipelineList}>
+                      {normalizePipelineLogs(video).map((log, logIndex) => (
+                        <div key={`${log.key || "log"}-${logIndex}`} style={styles.pipelineItem}>
+                          <span
+                            style={{
+                              ...styles.pipelineDot,
+                              ...(log.state === "done"
+                                ? styles.pipelineDotDone
+                                : log.state === "failed"
+                                  ? styles.pipelineDotFailed
+                                  : log.state === "active"
+                                    ? styles.pipelineDotActive
+                                    : styles.pipelineDotPending),
+                            }}
+                          />
+                          <span style={styles.pipelineText}>{log.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={styles.processingHint}>
+                    We are preparing this recording. It will become playable here automatically after processing.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={styles.videoFrame}>
+                    <video
+                      src={
+                        previewEnabledByFileId[String(video.fileId || "")] && video.fileId
+                          ? `/api/library/${video.fileId}/stream`
+                          : undefined
+                      }
+                      controls
+                      preload="none"
+                      style={styles.video}
+                      onClick={() => enablePreview(video.fileId)}
+                    />
+                    <div style={styles.badge}>
+                      <span style={styles.badgeDot} />
+                      {copy.cardBadge} {String(sessionNumber).padStart(2, "0")}
+                    </div>
+                  </div>
+
+                  <div style={styles.meta}>
+                    <p style={styles.metaLabel}>{copy.cardDateLabel}</p>
+                    <p style={styles.metaValue}>{formatRecordingDateTime(video.createdAt)}</p>
+                  </div>
+
+                  <div style={styles.pipelineWrapCompact}>
+                    <p style={styles.pipelineTitle}>{copy.pipelineLabel}</p>
+                    <div style={styles.pipelineList}>
+                      {normalizePipelineLogs(video).map((log, logIndex) => (
+                        <div key={`${log.key || "log"}-${logIndex}`} style={styles.pipelineItem}>
+                          <span
+                            style={{
+                              ...styles.pipelineDot,
+                              ...(log.state === "done"
+                                ? styles.pipelineDotDone
+                                : log.state === "failed"
+                                  ? styles.pipelineDotFailed
+                                  : log.state === "active"
+                                    ? styles.pipelineDotActive
+                                    : styles.pipelineDotPending),
+                            }}
+                          />
+                          <span style={styles.pipelineText}>{log.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={styles.actions}>
+                    <button
+                      type="button"
+                      onClick={() => downloadVideo(video, idx)}
+                      style={styles.actionBtn}
+                      className="pc-btn"
+                      disabled={downloadingId === String(video?.fileId || "")}
+                    >
+                      {downloadingId === String(video?.fileId || "")
+                        ? "Downloading…"
+                        : copy.download}
+                    </button>
+                    {video.transcriptFileId && (
+                      <button
+                        type="button"
+                        onClick={() => downloadTranscript(video, idx)}
+                        style={styles.actionBtnSecondary}
+                        className="pc-btn"
+                        disabled={
+                          downloadingId === String(video?.transcriptFileId || "")
+                        }
+                      >
+                        {downloadingId === String(video?.transcriptFileId || "")
+                          ? "Preparing…"
+                          : "Transcript (.txt)"}
+                      </button>
+                    )}
+                    {video.transcriptFileId && (
+                      <button
+                        type="button"
+                        onClick={() => openTranscript(video.sessionId)}
+                        style={styles.actionBtnSecondary}
+                        className="pc-btn"
+                        disabled={
+                          transcriptLoading &&
+                          transcriptLoadingFor === String(video.sessionId || "")
+                        }
+                      >
+                        {transcriptLoading &&
+                        transcriptLoadingFor === String(video.sessionId || "")
+                          ? "Loading…"
+                          : "View transcript"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => watchInNewTab(video)}
+                      style={styles.actionBtnSecondary}
+                      className="pc-btn"
+                      disabled={watchingId === String(video?.fileId || "")}
+                    >
+                      {watchingId === String(video?.fileId || "")
+                        ? "Opening…"
+                        : copy.open}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteVideo(video.fileId)}
+                      style={styles.deleteBtn}
+                      className="pc-btn"
+                    >
+                      {copy.delete}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
+              );
+            })()
           ))}
         </div>
       )}
@@ -677,6 +852,8 @@ function Library() {
 export default Library;
 
 const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@500;700;800&display=swap');
+
   .pc-card {
     animation: pcEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -689,6 +866,8 @@ const css = `
     box-shadow: 0 20px 50px rgba(0,0,0,0.12);
   }
   .pc-btn { text-decoration: none; }
+  .pc-btn:hover:not(:disabled) { transform: translateY(-1px); }
+  .pc-btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .pc-btn:focus { outline: none; }
   .pc-btn:focus-visible { box-shadow: 0 0 0 3px rgba(0,0,0,0.15); }
   .pc-skeleton { position: relative; overflow: hidden; }
@@ -710,10 +889,11 @@ const styles = {
   page: {
     minHeight: "100vh",
     padding: "110px 28px 56px",
-    background: "linear-gradient(180deg, #fafafa 0%, #fff 24%)",
-    color: "#0b0b0b",
+    background:
+      "radial-gradient(1200px 420px at 10% -4%, rgba(255, 193, 7, 0.22) 0%, rgba(255, 193, 7, 0) 60%), radial-gradient(1200px 420px at 100% -8%, rgba(10, 116, 255, 0.16) 0%, rgba(10, 116, 255, 0) 58%), linear-gradient(180deg, #f7f7f2 0%, #ffffff 32%)",
+    color: "#101010",
     fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      '"Space Grotesk", "Sora", "Segoe UI", sans-serif',
   },
   header: {
     maxWidth: 1200,
@@ -726,25 +906,26 @@ const styles = {
   kicker: {
     margin: 0,
     fontSize: 11,
-    letterSpacing: 4,
-    color: "#888",
+    letterSpacing: 3.2,
+    color: "#5a5a4d",
     fontWeight: 800,
     textTransform: "uppercase",
   },
   title: {
     margin: "12px 0 10px",
-    fontSize: "clamp(30px, 4.5vw, 48px)",
+    fontSize: "clamp(30px, 4.8vw, 52px)",
     letterSpacing: "-1.2px",
     lineHeight: 1.08,
-    fontWeight: 800,
-    color: "#000",
+    fontWeight: 900,
+    color: "#0d0d0a",
+    fontFamily: '"Sora", "Space Grotesk", sans-serif',
   },
   subtitle: {
     margin: 0,
     maxWidth: 560,
-    color: "#5c5c5c",
+    color: "#4f4f44",
     lineHeight: 1.6,
-    fontSize: 15,
+    fontSize: 15.5,
   },
   headerRight: {
     display: "flex",
@@ -756,9 +937,21 @@ const styles = {
   statCard: {
     padding: "12px 14px",
     borderRadius: 16,
-    border: "1px solid rgba(0,0,0,0.08)",
-    background: "rgba(0,0,0,0.02)",
+    border: "1px solid rgba(0,0,0,0.09)",
+    background: "rgba(255,255,255,0.72)",
     minWidth: 96,
+    backdropFilter: "blur(8px)",
+  },
+  liveBadge: {
+    padding: "9px 12px",
+    borderRadius: 999,
+    border: "1px solid rgba(245, 180, 0, 0.38)",
+    background: "rgba(245, 180, 0, 0.14)",
+    color: "#6a4b00",
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 0.25,
+    whiteSpace: "nowrap",
   },
   statLabel: { margin: 0, fontSize: 12, color: "#777", fontWeight: 600 },
   statValue: { margin: "2px 0 0", fontSize: 22, fontWeight: 800 },
@@ -766,7 +959,7 @@ const styles = {
     padding: "12px 16px",
     borderRadius: 999,
     border: "2px solid #000",
-    background: "#000",
+    background: "linear-gradient(135deg, #111 0%, #2d2d2d 100%)",
     color: "#fff",
     fontWeight: 700,
     cursor: "pointer",
@@ -788,8 +981,9 @@ const styles = {
     padding: "12px 14px",
     borderRadius: 16,
     border: "1px solid rgba(0,0,0,0.08)",
-    background: "rgba(0,0,0,0.02)",
+    background: "rgba(255,255,255,0.75)",
     maxWidth: 520,
+    backdropFilter: "blur(8px)",
   },
   searchIcon: { color: "#666", fontSize: 16 },
   search: {
@@ -820,13 +1014,35 @@ const styles = {
   },
   card: {
     borderRadius: 22,
-    border: "1px solid rgba(0,0,0,0.06)",
-    background: "#fff",
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(252,252,247,0.98) 100%)",
     overflow: "hidden",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.06)",
+    boxShadow: "0 12px 36px rgba(0,0,0,0.08)",
     transition: "transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s ease",
   },
   videoFrame: { position: "relative", background: "#000" },
+  videoFrameProcessing: {
+    position: "relative",
+    height: 220,
+    background: "linear-gradient(130deg, #ecece3 0%, #f4f4ee 54%, #ecece3 100%)",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    gap: 12,
+    padding: 18,
+  },
+  processingBar: {
+    height: 12,
+    width: "86%",
+    borderRadius: 99,
+    background: "rgba(0,0,0,0.11)",
+  },
+  processingBarSmall: {
+    height: 12,
+    width: "62%",
+    borderRadius: 99,
+    background: "rgba(0,0,0,0.09)",
+  },
   video: {
     width: "100%",
     height: 220,
@@ -856,12 +1072,34 @@ const styles = {
     background: "#fff",
     opacity: 0.9,
   },
+  badgeProcessing: {
+    position: "absolute",
+    left: 14,
+    top: 14,
+    padding: "8px 12px",
+    borderRadius: 999,
+    background: "rgba(0,0,0,0.72)",
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: 800,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    backdropFilter: "blur(10px)",
+  },
+  badgeDotLive: {
+    width: 8,
+    height: 8,
+    borderRadius: 99,
+    background: "#f5b400",
+    boxShadow: "0 0 0 6px rgba(245, 180, 0, 0.2)",
+  },
   meta: { padding: "14px 16px 0" },
   metaLabel: { margin: 0, fontSize: 12, color: "#777", fontWeight: 700 },
   metaValue: {
     margin: "6px 0 0",
-    fontSize: 13,
-    fontWeight: 700,
+    fontSize: 14,
+    fontWeight: 800,
     color: "#111",
     overflow: "hidden",
     textOverflow: "ellipsis",
@@ -872,6 +1110,73 @@ const styles = {
     gridTemplateColumns: "1fr 1fr",
     gap: 10,
     padding: 16,
+  },
+  processingHint: {
+    margin: "12px 16px 16px",
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "rgba(0,0,0,0.04)",
+    border: "1px solid rgba(0,0,0,0.08)",
+    color: "#3e3e36",
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.45,
+  },
+  pipelineWrap: {
+    margin: "12px 16px 0",
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "rgba(255,255,255,0.68)",
+  },
+  pipelineWrapCompact: {
+    margin: "12px 16px 0",
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.07)",
+    background: "rgba(0,0,0,0.02)",
+  },
+  pipelineTitle: {
+    margin: 0,
+    fontSize: 12,
+    color: "#666",
+    fontWeight: 800,
+    letterSpacing: 0.2,
+  },
+  pipelineList: {
+    marginTop: 8,
+    display: "grid",
+    gap: 7,
+  },
+  pipelineItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  pipelineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 99,
+    flexShrink: 0,
+  },
+  pipelineDotDone: {
+    background: "#2e7d32",
+  },
+  pipelineDotActive: {
+    background: "#f5b400",
+    boxShadow: "0 0 0 5px rgba(245, 180, 0, 0.2)",
+  },
+  pipelineDotPending: {
+    background: "#9e9e9e",
+  },
+  pipelineDotFailed: {
+    background: "#d32f2f",
+  },
+  pipelineText: {
+    fontSize: 12.5,
+    color: "#343434",
+    lineHeight: 1.35,
+    fontWeight: 600,
   },
   actionBtn: {
     display: "inline-flex",

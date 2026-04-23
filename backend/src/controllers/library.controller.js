@@ -1,20 +1,146 @@
 import Session from "../models/Session.js";
-import { getDownloadUrl, deleteFromB2, streamFileToResponse } from "../utils/b2.js";
+import { deleteFromB2, streamFileToResponse } from "../utils/b2.js";
 import { translateTranscriptAndSummary } from "../services/translation.service.js";
 
 /**
- * GET all finalized meeting videos
+ * GET video library items.
+ * Includes:
+ * - Ready recordings (final file available)
+ * - Processing recordings (session ended, file not ready yet)
  */
 export const getVideoLibrary = async (req, res) => {
   try {
     const sessions = await Session.find({
-      finalMeetingFileId: { $exists: true },
-    }).sort({ createdAt: -1 });
+      $or: [
+        { finalMeetingFileId: { $exists: true, $ne: null } },
+        {
+          status: "ENDED",
+          $or: [
+            { finalMeetingFileId: { $exists: false } },
+            { finalMeetingFileId: null },
+            { finalMeetingFileId: "" },
+          ],
+        },
+      ],
+    }).sort({ createdAt: -1, _id: -1 });
+
+    const getPipelineLogs = (session) => {
+      const logs = [];
+      const tState = String(session.transcriptionStatus || "NONE");
+      const hasSummary = Boolean(session?.meetingSummary?.generatedAt);
+      const transcriptCompleted = ["SUCCEEDED", "PARTIAL", "FAILED"].includes(tState);
+
+      logs.push({
+        key: "session-ended",
+        label: "Session ended",
+        state: session.status === "ENDED" ? "done" : "active",
+      });
+
+      if (!session.finalMeetingFileId) {
+        logs.push({
+          key: "final-video",
+          label: "Final video is being generated",
+          state: "active",
+        });
+        logs.push({
+          key: "transcript",
+          label: "Transcript will start after final video",
+          state: "pending",
+        });
+        logs.push({
+          key: "summary",
+          label: "Summary generation will run after transcript",
+          state: "pending",
+        });
+        return logs;
+      }
+
+      logs.push({
+        key: "final-video",
+        label: "Final video generated",
+        state: "done",
+      });
+
+      if (!transcriptCompleted || tState === "RUNNING") {
+        logs.push({
+          key: "transcript",
+          label: "Transcript is generating",
+          state: "active",
+        });
+      } else if (tState === "SUCCEEDED" || tState === "PARTIAL") {
+        logs.push({
+          key: "transcript",
+          label: "Transcript generated",
+          state: "done",
+        });
+      } else if (tState === "FAILED") {
+        logs.push({
+          key: "transcript",
+          label: "Transcript generation failed",
+          state: "failed",
+        });
+      } else {
+        logs.push({
+          key: "transcript",
+          label: "Transcript queued",
+          state: "pending",
+        });
+      }
+
+      if (hasSummary) {
+        logs.push({
+          key: "summary",
+          label: "AI summary generated",
+          state: "done",
+        });
+      } else if (!transcriptCompleted || tState === "RUNNING") {
+        logs.push({
+          key: "summary",
+          label: "Summary will generate after transcript",
+          state: "pending",
+        });
+      } else if (tState === "FAILED") {
+        logs.push({
+          key: "summary",
+          label: "Summary skipped due to transcript failure",
+          state: "done",
+        });
+      } else if (tState === "SUCCEEDED" || tState === "PARTIAL") {
+        logs.push({
+          key: "summary",
+          label: "Summary is generating",
+          state: "active",
+        });
+      } else {
+        logs.push({
+          key: "summary",
+          label: "Summary queued",
+          state: "pending",
+        });
+      }
+
+      return logs;
+    };
+
+    const isProcessing = (session) => {
+      const hasFinalVideo = Boolean(session.finalMeetingFileId);
+      const tState = String(session.transcriptionStatus || "NONE");
+      const transcriptCompleted = ["SUCCEEDED", "PARTIAL", "FAILED"].includes(tState);
+      const hasSummary = Boolean(session?.meetingSummary?.generatedAt);
+
+      if (!hasFinalVideo) return true;
+      if (!transcriptCompleted) return true;
+
+      // If transcript failed, there is no summary generation step to wait for.
+      if (tState === "FAILED") return false;
+
+      return !hasSummary;
+    };
 
     const videos = await Promise.all(
       sessions.map(async (s) => ({
         sessionId: s._id,
-        fileId: s.finalMeetingFileId,
+        fileId: s.finalMeetingFileId || null,
         // IMPORTANT:
         // Avoid calling B2 for signed URLs during library load.
         // B2 download/transaction caps can cause 403 "download_cap_exceeded"
@@ -22,7 +148,12 @@ export const getVideoLibrary = async (req, res) => {
         url: null,
         createdAt: s.createdAt,
         duration: s.duration,
+        status: s.status,
+        recordingState: s.recordingState,
+        transcriptionStatus: s.transcriptionStatus,
+        processing: isProcessing(s),
         transcriptFileId: s.transcriptFileId || null,
+        pipelineLogs: getPipelineLogs(s),
       }))
     );
 
