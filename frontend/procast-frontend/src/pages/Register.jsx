@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../api/axios";
 
 function Register() {
@@ -10,6 +10,7 @@ function Register() {
   });
 
   const [message, setMessage] = useState("");
+  const navigate = useNavigate();
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -26,8 +27,14 @@ function Register() {
         },
       });
 
-      setMessage("Account created. You can now log in.");
-      setForm({ name: "", email: "", password: "" });
+      setMessage("Account created! Redirecting to login…");
+
+      // Redirect to login with credentials pre-filled after a brief delay
+      setTimeout(() => {
+        navigate("/login", {
+          state: { email: form.email, password: form.password },
+        });
+      }, 1200);
     } catch (error) {
       setMessage(
         error.response?.data?.message || "Registration failed. Please try again."

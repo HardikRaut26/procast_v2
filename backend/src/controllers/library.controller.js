@@ -10,7 +10,9 @@ import { translateTranscriptAndSummary } from "../services/translation.service.j
  */
 export const getVideoLibrary = async (req, res) => {
   try {
+    // Only return sessions where the logged-in user is the host
     const sessions = await Session.find({
+      host: req.user._id,
       $or: [
         { finalMeetingFileId: { $exists: true, $ne: null } },
         {
@@ -176,6 +178,12 @@ export const deleteVideo = async (req, res) => {
       return res.status(400).json({ message: "fileId required" });
     }
 
+    // Verify the logged-in user is the host of this recording
+    const session = await Session.findOne({ finalMeetingFileId: fileId, host: req.user._id });
+    if (!session) {
+      return res.status(403).json({ message: "You can only delete your own recordings" });
+    }
+
     await deleteFromB2(fileId);
 
     await Session.updateMany(
@@ -199,6 +207,16 @@ export const downloadVideoStream = async (req, res) => {
     if (!fileId) {
       return res.status(400).json({ message: "fileId required" });
     }
+
+    // Verify ownership: only the host can download
+    const session = await Session.findOne({
+      $or: [{ finalMeetingFileId: fileId }, { transcriptFileId: fileId }],
+      host: req.user._id,
+    });
+    if (!session) {
+      return res.status(403).json({ message: "You can only download your own recordings" });
+    }
+
     await streamFileToResponse(fileId, res);
   } catch (err) {
     console.error("❌ Download stream error:", err);
@@ -220,6 +238,13 @@ export const inlineVideoStream = async (req, res) => {
     if (!fileId) {
       return res.status(400).json({ message: "fileId required" });
     }
+
+    // Verify ownership: only the host can stream
+    const session = await Session.findOne({ finalMeetingFileId: fileId, host: req.user._id });
+    if (!session) {
+      return res.status(403).json({ message: "You can only view your own recordings" });
+    }
+
     await streamFileToResponse(fileId, res, { download: false });
   } catch (err) {
     console.error("❌ Inline stream error:", err);
@@ -243,9 +268,14 @@ export const getTranscriptForSession = async (req, res) => {
       return res.status(400).json({ message: "sessionId required" });
     }
 
-    const session = await Session.findById(sessionId).select("transcript meetingSummary");
+    const session = await Session.findById(sessionId).select("transcript meetingSummary host");
     if (!session) {
       return res.status(404).json({ message: "Session not found" });
+    }
+
+    // Only the host can view the transcript
+    if (String(session.host) !== String(req.user._id)) {
+      return res.status(403).json({ message: "You can only view transcripts of your own recordings" });
     }
 
     try {

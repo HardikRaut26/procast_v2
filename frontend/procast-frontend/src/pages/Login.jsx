@@ -1,15 +1,33 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import api from "../api/axios";
 
 function Login() {
+  const location = useLocation();
+
   const [form, setForm] = useState({
     email: "",
     password: "",
   });
 
   const [message, setMessage] = useState("");
+  const [prefilled, setPrefilled] = useState(false);
   const navigate = useNavigate();
+
+  // Pre-fill credentials when arriving from Register page
+  useEffect(() => {
+    if (location.state?.email) {
+      setForm({
+        email: location.state.email,
+        password: location.state.password || "",
+      });
+      setMessage("Account created successfully! Log in to continue.");
+      setPrefilled(true);
+
+      // Clear the state so a page refresh doesn't re-trigger
+      window.history.replaceState({}, "");
+    }
+  }, [location.state]);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -33,7 +51,9 @@ function Login() {
     }
   };
 
-  const isSuccess = message.toLowerCase().startsWith("login successful");
+  const isSuccess =
+    message.toLowerCase().startsWith("login successful") ||
+    message.toLowerCase().startsWith("account created");
 
   return (
     <div style={styles.page}>

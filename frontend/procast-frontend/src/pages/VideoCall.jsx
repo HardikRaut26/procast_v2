@@ -19,6 +19,79 @@ const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 /** Dedupe invite-link auto-join across React Strict Mode remounts */
 const autoJoinOnceBySession = new Map();
 
+/* ─── Auto-detect camera quality ─────────────────────────────────────────── */
+
+/**
+ * Resolution tiers ordered from highest to lowest.
+ * The detector picks the best tier that fits the camera's actual output.
+ */
+const QUALITY_TIERS = [
+  { label: "4K",    width: 3840, height: 2160, bitrateMin: 8000,  bitrateMax: 15000 },
+  { label: "1440p", width: 2560, height: 1440, bitrateMin: 6000,  bitrateMax: 10000 },
+  { label: "1080p", width: 1920, height: 1080, bitrateMin: 4000,  bitrateMax: 6000  },
+  { label: "720p",  width: 1280, height: 720,  bitrateMin: 2500,  bitrateMax: 4000  },
+  { label: "480p",  width: 854,  height: 480,  bitrateMin: 800,   bitrateMax: 1500  },
+  { label: "360p",  width: 640,  height: 360,  bitrateMin: 400,   bitrateMax: 800   },
+];
+
+/**
+ * One single getUserMedia probe — ask for the maximum, then read what the
+ * browser actually negotiated with the camera. Maps the result to the best
+ * matching quality tier. This avoids multiple open/close cycles that cause
+ * the camera LED to flash repeatedly.
+ */
+async function detectBestEncoderConfig() {
+  try {
+    // Single probe: request the highest possible — browser will clamp to the camera's real max
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width:     { ideal: 3840 },
+        height:    { ideal: 2160 },
+        frameRate: { ideal: 120 },
+      },
+    });
+
+    const track    = stream.getVideoTracks()[0];
+    const settings = track?.getSettings();
+    // Release the probe stream immediately
+    stream.getTracks().forEach((t) => t.stop());
+
+    const actualW   = settings?.width     ?? 640;
+    const actualH   = settings?.height    ?? 360;
+    const actualFps = Math.round(settings?.frameRate ?? 30);
+
+    // Find the best tier the camera can handle (≥80 % of tier resolution)
+    const tier = QUALITY_TIERS.find(
+      (t) => actualW >= t.width * 0.8 && actualH >= t.height * 0.8
+    ) || QUALITY_TIERS[QUALITY_TIERS.length - 1]; // fallback to 360p
+
+    // Cap FPS at 60 for WebRTC
+    const frameRate = Math.min(actualFps, 60);
+
+    // Scale bitrate for high frame rates (60 fps ≈ 1.5× bandwidth of 30 fps)
+    const fpsFactor  = frameRate > 30 ? frameRate / 30 : 1;
+    const bitrateMin = Math.round(tier.bitrateMin * fpsFactor);
+    const bitrateMax = Math.round(tier.bitrateMax * fpsFactor);
+
+    console.log(
+      `[VideoCall] Camera detected: ${actualW}×${actualH} @ ${actualFps}fps → using ${tier.label} @ ${frameRate}fps`
+    );
+
+    return {
+      width:  tier.width,
+      height: tier.height,
+      frameRate,
+      bitrateMin,
+      bitrateMax,
+    };
+  } catch (err) {
+    console.warn("[VideoCall] Camera probe failed:", err.message, "— using Agora default");
+    return "480p_1";
+  }
+}
+
+/* ─── End auto-detect ────────────────────────────────────────────────────── */
+
 /** Extract meeting selector from URL/query/raw value (Mongo id or 5-digit meeting code) */
 function parseSessionIdFromInput(raw) {
   const s = String(raw).trim();
@@ -51,31 +124,27 @@ const getGridColumns = (count) => {
 };
 
 const keyframes = `
-  @keyframes videoFadeIn {
-    from { opacity: 0; transform: scale(0.96); }
-    to { opacity: 1; transform: scale(1); }
+  @keyframes videoFadeIn { from { opacity:0; } to { opacity:1; } }
+  @keyframes slideUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.7} }
+
+  .pc-ctrl-btn { position:relative; outline:none; transition:background .15s,transform .15s; }
+  .pc-ctrl-btn:hover { transform:scale(1.06)!important; }
+  .pc-ctrl-btn:active { transform:scale(.95)!important; }
+  .pc-ctrl-btn::after {
+    content:attr(data-tip); position:absolute; bottom:calc(100% + 8px); left:50%;
+    transform:translateX(-50%) translateY(3px); padding:5px 10px; border-radius:4px;
+    background:#303134; color:#e8eaed; font-size:12px; font-weight:500;
+    white-space:nowrap; opacity:0; pointer-events:none; transition:opacity .12s,transform .12s; z-index:300;
   }
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(16px); }
-    to { opacity: 1; transform: translateY(0); }
+  .pc-ctrl-btn:hover::after { opacity:1; transform:translateX(-50%) translateY(0); }
+  .pc-ctrl-danger:hover { background:#c5221f!important; }
+  .pc-ctrl-divider { width:1px; height:24px; background:rgba(255,255,255,.1); margin:0 6px; }
+
+  .video-tile video,.video-tile canvas,#local-player video,#local-player canvas {
+    width:100%!important; height:100%!important; object-fit:cover!important; display:block!important;
   }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.75; }
-  }
-  @keyframes btnHover {
-    to { transform: scale(1.05); }
-  }
-  .video-tile video, .video-tile canvas, #local-player video, #local-player canvas {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: cover !important;
-    display: block !important;
-  }
-  #local-player {
-    position: absolute;
-    inset: 0;
-  }
+  #local-player { position:absolute; inset:0; }
 `;
 
 function VideoCall() {
@@ -96,6 +165,7 @@ function VideoCall() {
   const [joinError, setJoinError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [participantCount, setParticipantCount] = useState(1);
+  const [callDuration, setCallDuration] = useState(0);
   const [micMuted, setMicMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -104,6 +174,7 @@ function VideoCall() {
   const [showMeetingEndedModal, setShowMeetingEndedModal] = useState(false);
   const [participants, setParticipants] = useState([]);
   const [agoraUidMapping, setAgoraUidMapping] = useState({});
+  const [userProfile, setUserProfile] = useState(null);
 
   const shareMenuRef = useRef(null);
   const audioTrackRef = useRef(null);
@@ -120,6 +191,17 @@ function VideoCall() {
 
   /** Track all remote users and their media state: Map<uid, { uid, hasVideo, hasAudio, videoTrack, audioTrack }> */
   const remoteUsersRef = useRef(new Map());
+
+  // Fetch current user profile (for camera-off avatar)
+  useEffect(() => {
+    api.get("/auth/me")
+      .then((res) => setUserProfile(res.data.user || null))
+      .catch(() => {});
+  }, []);
+
+  const userInitials = userProfile?.name
+    ? userProfile.name.split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]?.toUpperCase()).join("")
+    : "?";
 
   /**
    * @param {{ forceCreate?: boolean; sessionIdOverride?: string | null }} [opts]
@@ -184,15 +266,11 @@ function VideoCall() {
       console.log("[VideoCall] Agora joined", { channelName });
 
       const mic = await AgoraRTC.createMicrophoneAudioTrack();
-      const cam = await AgoraRTC.createCameraVideoTrack({
-        encoderConfig: {
-          width: 1280,
-          height: 720,
-          frameRate: 30,
-          bitrateMin: 2500,
-          bitrateMax: 4000,
-        },
-      });
+
+      // Auto-detect camera capabilities and pick the best quality tier
+      const encoderConfig = await detectBestEncoderConfig();
+      console.log("[VideoCall] Using encoder config:", encoderConfig);
+      const cam = await AgoraRTC.createCameraVideoTrack({ encoderConfig });
 
       await client.publish([mic, cam]);
       audioTrackRef.current = mic;
@@ -1068,61 +1146,127 @@ function VideoCall() {
     };
   };
 
-  /** In-call control: `on` = mic unmuted / camera on / etc. */
+  /** In-call control — Google Meet style circular buttons */
   const meetingControlBtn = (on, opts = {}) => {
     const { danger, recording, wide } = opts;
     if (danger) {
       return {
-        minWidth: wide ? 88 : 52,
-        height: 52,
-        padding: wide ? "0 18px" : 0,
-        borderRadius: 16,
+        minWidth: wide ? 88 : 48,
+        height: 48,
+        padding: wide ? "0 20px" : 0,
+        borderRadius: 24,
         border: "none",
         cursor: "pointer",
-        background: "linear-gradient(180deg, #ef4444 0%, #dc2626 100%)",
+        background: "#ea4335",
         color: "#fff",
         fontSize: wide ? 14 : 20,
-        fontWeight: wide ? 700 : 400,
+        fontWeight: wide ? 500 : 400,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        transition: "transform 0.15s ease, box-shadow 0.15s ease",
+        gap: 8,
+        transition: "background .15s, transform .15s",
         fontFamily: "inherit",
-        boxShadow: "0 4px 16px rgba(220, 38, 38, 0.35)",
       };
     }
+
+    const offState = !on && !recording;
     return {
-      width: 52,
-      height: 52,
-      borderRadius: 14,
-      border: on
-        ? "1px solid rgba(255,255,255,0.22)"
-        : "1px solid rgba(255,255,255,0.1)",
+      width: 48,
+      height: 48,
+      borderRadius: "50%",
+      border: "none",
       cursor: "pointer",
-      background: on
-        ? recording
-          ? "rgba(251, 146, 60, 0.2)"
-          : "rgba(255,255,255,0.12)"
-        : "rgba(255,255,255,0.05)",
-      color: recording && on ? "#fb923c" : "#fafafa",
+      background: offState ? "#ea4335" : recording && on ? "#ea4335" : "#3c4043",
+      color: "#e8eaed",
       fontSize: 20,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      transition: "background 0.15s ease, border-color 0.15s ease",
+      transition: "background .15s, transform .15s",
       fontFamily: "inherit",
     };
+  };
+
+  /* SVG icon helpers for the control buttons */
+  const MicOnIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+    </svg>
+  );
+
+  const MicOffIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="2" y1="2" x2="22" y2="22"/>
+      <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/>
+      <path d="M5 10v2a7 7 0 0 0 12 5.66"/>
+      <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/>
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+    </svg>
+  );
+
+  const CamOnIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/>
+      <rect x="2" y="6" width="14" height="12" rx="2"/>
+    </svg>
+  );
+
+  const CamOffIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="2" y1="2" x2="22" y2="22"/>
+      <path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8"/>
+      <path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2"/>
+    </svg>
+  );
+
+  const RecordIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="7" fill="currentColor" opacity="0.3"/>
+      <circle cx="12" cy="12" r="7"/>
+    </svg>
+  );
+
+  const StopRecordIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" opacity="0.3"/>
+      <rect x="6" y="6" width="12" height="12" rx="2"/>
+    </svg>
+  );
+
+  const PhoneOffIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/>
+      <line x1="23" y1="1" x2="1" y2="23"/>
+    </svg>
+  );
+
+  // ─── Call duration timer ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!joined) { setCallDuration(0); return; }
+    const t = setInterval(() => setCallDuration((d) => d + 1), 1000);
+    return () => clearInterval(t);
+  }, [joined]);
+
+  const fmtDur = (s) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const mm = String(m).padStart(2, "0");
+    const ss = String(sec).padStart(2, "0");
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
   };
 
   return (
     <div
       style={{
         minHeight: "100vh",
-        background:
-          "radial-gradient(ellipse 100% 60% at 50% -15%, rgba(99, 102, 241, 0.14), transparent 45%), linear-gradient(165deg, #0c0c10 0%, #060608 55%, #0a0a0e 100%)",
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: "#fff",
+        background: "#202124",
+        fontFamily: '"Google Sans", "Segoe UI", Roboto, sans-serif',
+        color: "#e8eaed",
         display: "flex",
         flexDirection: "column",
         paddingTop: 70,
@@ -1387,458 +1531,212 @@ function VideoCall() {
         </div>
       ) : (
         <>
-          <div
-            style={{
-              position: "fixed",
-              top: 70,
-              left: 0,
-              right: 0,
-              height: 56,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "0 16px 0 24px",
-              background: "rgba(10, 10, 14, 0.78)",
-              backdropFilter: "blur(18px)",
-              WebkitBackdropFilter: "blur(18px)",
-              borderBottom: "1px solid rgba(255,255,255,0.06)",
-              zIndex: 100,
-              animation: "slideUp 0.4s ease-out",
-              color: "#e4e4e7",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: "#22c55e",
-                  boxShadow: "0 0 12px rgba(34, 197, 94, 0.6)",
-                }}
-                aria-hidden
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.02em" }}>
-                  ProCast
-                </span>
-                <span style={{ fontSize: 12, color: "rgba(228,228,231,0.55)" }}>
-                  {participantCount} in call
-                </span>
-              </div>
-            </div>
+          {/* ── Full-viewport video area (Meet-style) ── */}
+          <div style={{
+            position: "fixed", top: 70, left: 0, right: 0, bottom: 0,
+            display: "flex", flexDirection: "column", background: "#202124",
+          }}>
+            {/* Video grid */}
+            <div style={{ flex: 1, padding: 8, display: "flex", minHeight: 0 }}>
+              <div style={{ ...gridStyle, width: "100%", height: "100%" }}>
+                <div className="video-tile" style={{
+                  position: "relative", borderRadius: 12, overflow: "hidden",
+                  background: "#3c4043", width: "100%", height: "100%",
+                  animation: "videoFadeIn 0.3s ease",
+                }}>
+                  <div id="local-player" style={{
+                    position: "absolute", inset: 0, width: "100%", height: "100%", background: "#3c4043",
+                  }} />
 
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              {isRecording && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "7px 14px",
-                    background: "rgba(239, 68, 68, 0.12)",
-                    borderRadius: 999,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "#fca5a5",
-                    border: "1px solid rgba(248, 113, 113, 0.25)",
-                    animation: "pulse 2s ease-in-out infinite",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "50%",
-                      background: "#ef4444",
-                    }}
-                  />
-                  Recording
-                </span>
-              )}
-
-              {isHost && sessionId ? (
-                <div ref={shareMenuRef} style={{ position: "relative" }}>
-                  <button
-                    type="button"
-                    aria-label="Meeting info and invite"
-                    aria-expanded={showShareMenu}
-                    aria-haspopup="true"
-                    onClick={() => setShowShareMenu((v) => !v)}
-                    style={{
-                      width: 40,
-                      height: 40,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      border: "1px solid rgba(255,255,255,0.1)",
-                      borderRadius: 12,
-                      background: showShareMenu
-                        ? "rgba(255,255,255,0.12)"
-                        : "rgba(255,255,255,0.05)",
-                      color: "#e4e4e7",
-                      cursor: "pointer",
-                      fontSize: 18,
-                      lineHeight: 1,
-                      padding: 0,
-                      fontFamily: "inherit",
-                      transition: "background 0.15s ease",
-                    }}
-                  >
-                    <span
-                      aria-hidden
-                      style={{
-                        display: "block",
-                        fontSize: 20,
-                        fontWeight: 700,
-                        lineHeight: 0.85,
-                        letterSpacing: 0,
-                      }}
-                    >
-                      ⋮
-                    </span>
-                  </button>
-
-                  {showShareMenu ? (
-                    <div
-                      role="dialog"
-                      aria-label="Share meeting"
-                      style={{
-                        position: "absolute",
-                        top: "calc(100% + 8px)",
-                        right: 0,
-                        width: "min(calc(100vw - 32px), 380px)",
-                        padding: "14px 16px 16px",
-                        background: "rgba(14, 14, 18, 0.98)",
-                        backdropFilter: "blur(20px)",
-                        WebkitBackdropFilter: "blur(20px)",
-                        borderRadius: 16,
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        boxShadow:
-                          "0 24px 48px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04)",
-                        zIndex: 200,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          marginBottom: 12,
-                        }}
-                      >
-                        <span
+                  {/* Camera-off avatar overlay */}
+                  {videoOff && (
+                    <div style={{
+                      position: "absolute", inset: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      background: "#3c4043", zIndex: 2,
+                    }}>
+                      {userProfile?.profilePhoto ? (
+                        <img
+                          src={userProfile.profilePhoto}
+                          alt={userProfile.name || "You"}
                           style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "#f4f4f5",
-                            letterSpacing: "-0.02em",
+                            width: 96, height: 96, borderRadius: "50%",
+                            objectFit: "cover",
                           }}
-                        >
-                          Share meeting
-                        </span>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: "rgba(244,244,245,0.4)",
-                          }}
-                        >
-                          Guests use either
-                        </span>
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "2px 2px 2px 12px",
-                          borderRadius: 12,
-                          background: "rgba(0,0,0,0.45)",
-                          border: "1px solid rgba(255,255,255,0.06)",
-                          marginBottom: meetingCode ? 10 : 0,
-                        }}
-                      >
-                        <p
-                          title={inviteUrl}
-                          onClick={(e) => {
-                            const sel = window.getSelection();
-                            const range = document.createRange();
-                            range.selectNodeContents(e.currentTarget);
-                            sel?.removeAllRanges();
-                            sel?.addRange(range);
-                          }}
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            margin: 0,
-                            padding: "8px 0",
-                            fontSize: 12,
-                            lineHeight: 1.35,
-                            color: "#d4d4d8",
-                            fontFamily:
-                              "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            cursor: "text",
-                            userSelect: "all",
-                          }}
-                        >
-                          {inviteUrl}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={copyLink}
-                          style={{
-                            flexShrink: 0,
-                            padding: "8px 14px",
-                            fontSize: 12,
-                            fontWeight: 600,
-                            border: "none",
-                            borderRadius: 10,
-                            cursor: "pointer",
-                            fontFamily: "inherit",
-                            background: linkCopied
-                              ? "rgba(34, 197, 94, 0.22)"
-                              : "rgba(255,255,255,0.1)",
-                            color: linkCopied ? "#86efac" : "#fafafa",
-                            transition: "background 0.15s, color 0.15s",
-                          }}
-                        >
-                          {linkCopied ? "Copied" : "Copy"}
-                        </button>
-                      </div>
-
-                      {meetingCode ? (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 12,
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            background: "rgba(0,0,0,0.35)",
-                            border: "1px solid rgba(255,255,255,0.06)",
-                          }}
-                        >
-                          <div>
-                            <div
-                              style={{
-                                fontSize: 10,
-                                fontWeight: 600,
-                                letterSpacing: "0.05em",
-                                textTransform: "uppercase",
-                                color: "rgba(228,228,231,0.45)",
-                                marginBottom: 3,
-                              }}
-                            >
-                              Meeting ID
-                            </div>
-                            <div
-                              style={{
-                                fontSize: 19,
-                                fontWeight: 700,
-                                color: "#fafafa",
-                                letterSpacing: "0.18em",
-                                fontVariantNumeric: "tabular-nums",
-                                paddingLeft: 2,
-                              }}
-                            >
-                              {meetingCode}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={copyMeetingCodeDigits}
-                            style={{
-                              flexShrink: 0,
-                              padding: "8px 14px",
-                              fontSize: 12,
-                              fontWeight: 600,
-                              border: "none",
-                              borderRadius: 10,
-                              cursor: "pointer",
-                              fontFamily: "inherit",
-                              background: codeCopied
-                                ? "rgba(34, 197, 94, 0.22)"
-                                : "rgba(255,255,255,0.1)",
-                              color: codeCopied ? "#86efac" : "#fafafa",
-                              transition: "background 0.15s, color 0.15s",
-                            }}
-                          >
-                            {codeCopied ? "Copied" : "Copy ID"}
-                          </button>
+                        />
+                      ) : (
+                        <div style={{
+                          width: 96, height: 96, borderRadius: "50%",
+                          background: "#5f6368",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 36, fontWeight: 600, color: "#e8eaed",
+                          letterSpacing: 2, userSelect: "none",
+                        }}>
+                          {userInitials}
                         </div>
-                      ) : null}
+                      )}
                     </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          </div>
+                  )}
 
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "72px 16px 200px",
-              minHeight: 0,
-              width: "100%",
-            }}
-          >
-            <div
-              style={{
-                ...gridStyle,
-                maxWidth: 1680,
-                width: "100%",
-                height: "calc(100vh - 260px)",
-                minHeight: 280,
-              }}
-            >
-              <div
-                className="video-tile"
-                style={{
-                  position: "relative",
-                  borderRadius: 16,
-                  overflow: "hidden",
-                  background: "linear-gradient(145deg, #18181f 0%, #0f0f14 100%)",
-                  width: "100%",
-                  height: "100%",
-                  minHeight: 200,
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  boxShadow:
-                    "0 24px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04)",
-                  animation: "videoFadeIn 0.5s ease-out",
-                }}
-              >
-                <div
-                  id="local-player"
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    width: "100%",
-                    height: "100%",
-                    background: "#121218",
-                  }}
-                />
-                <span
-                  style={{
-                    position: "absolute",
-                    bottom: 14,
-                    left: 14,
-                    padding: "7px 12px",
-                    background: "rgba(0,0,0,0.55)",
-                    backdropFilter: "blur(8px)",
-                    borderRadius: 8,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "#fafafa",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                  }}
-                >
-                  You
+                  <span style={{
+                    position: "absolute", bottom: 8, left: 8, padding: "4px 8px",
+                    background: "rgba(0,0,0,0.6)", borderRadius: 4,
+                    fontSize: 13, fontWeight: 500, color: "#e8eaed", zIndex: 3,
+                  }}>You</span>
+                  {micMuted && (
+                    <div style={{
+                      position: "absolute", bottom: 8, right: 8,
+                      width: 28, height: 28, borderRadius: "50%", background: "#ea4335",
+                      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3,
+                    }}><MicOffIcon /></div>
+                  )}
+                </div>
+                <div id="remote-playerlist" style={{ display: "contents" }} />
+              </div>
+            </div>
+
+            {/* Meeting info overlay (top-left) */}
+            <div style={{
+              position: "absolute", top: 12, left: 16,
+              display: "flex", alignItems: "center", gap: 14,
+              padding: "8px 16px",
+              background: "rgba(0,0,0,0.65)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+              borderRadius: 10,
+              zIndex: 10,
+            }}>
+              {/* Timer */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 16 14"/>
+                </svg>
+                <span style={{ fontSize: 14, fontWeight: 600, color: "#e8eaed", fontVariantNumeric: "tabular-nums", letterSpacing: "0.02em" }}>
+                  {fmtDur(callDuration)}
                 </span>
               </div>
-              <div id="remote-playerlist" style={{ display: "contents" }} />
-            </div>
-          </div>
 
-          <div
-            style={{
-              position: "fixed",
-              bottom: 0,
-              left: 0,
-              right: 0,
-              display: "flex",
-              justifyContent: "center",
-              padding: "20px 16px 28px",
-              zIndex: 100,
-              background:
-                "linear-gradient(to top, rgba(0,0,0,0.82) 0%, transparent 100%)",
-              animation: "slideUp 0.4s ease-out 0.15s both",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 12px 10px 14px",
-                background: "rgba(18, 18, 24, 0.92)",
-                backdropFilter: "blur(20px)",
-                WebkitBackdropFilter: "blur(20px)",
-                borderRadius: 22,
-                border: "1px solid rgba(255,255,255,0.08)",
-                boxShadow: "0 12px 40px rgba(0,0,0,0.55)",
-              }}
-            >
-              <button
-                type="button"
-                onClick={toggleMic}
-                title={micMuted ? "Unmute microphone" : "Mute microphone"}
-                aria-pressed={!micMuted}
-                style={meetingControlBtn(!micMuted)}
-              >
-                {micMuted ? "🔇" : "🎤"}
-              </button>
-              <button
-                type="button"
-                onClick={toggleVideo}
-                title={videoOff ? "Turn camera on" : "Turn camera off"}
-                aria-pressed={!videoOff}
-                style={meetingControlBtn(!videoOff)}
-              >
-                {videoOff ? "📷" : "📹"}
-              </button>
+              <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.15)", flexShrink: 0 }} />
 
-              {isHost && (
+              {/* Participant count */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#e8eaed" }}>
+                  {participantCount}
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 500, color: "#9aa0a6" }}>
+                  {participantCount === 1 ? "Person" : "People"}
+                </span>
+              </div>
+
+              {isRecording && (
                 <>
-                  {!isRecording ? (
-                    <button
-                      type="button"
-                      onClick={startRecording}
-                      title="Start recording"
-                      style={meetingControlBtn(false, { recording: true })}
-                    >
-                      ⏺
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={stopRecording}
-                      title="Stop recording"
-                      style={{
-                        ...meetingControlBtn(true, { recording: true }),
-                        animation: "pulse 2s ease-in-out infinite",
-                      }}
-                    >
-                      ⏹
-                    </button>
-                  )}
+                  <span style={{ width: 1, height: 16, background: "rgba(255,255,255,0.15)", flexShrink: 0 }} />
+                  <div style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "3px 10px", borderRadius: 6,
+                    background: "#ea4335", fontSize: 12, fontWeight: 600, color: "#fff",
+                    animation: "pulse 2s infinite",
+                  }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />
+                    REC
+                  </div>
                 </>
               )}
+            </div>
 
-              <button
-                type="button"
-                onClick={leaveChannel}
-                title={isHost ? "End meeting for everyone" : "Leave call"}
-                style={{ ...meetingControlBtn(false, { danger: true, wide: true }), marginLeft: 6 }}
-              >
-                {isHost ? "End" : "Leave"}
-              </button>
+            {/* Share button (top-right) */}
+            {isHost && sessionId ? (
+              <div ref={shareMenuRef} style={{ position: "absolute", top: 12, right: 16, zIndex: 10 }}>
+                <button type="button" aria-label="Meeting info"
+                  onClick={() => setShowShareMenu((v) => !v)}
+                  style={{
+                    width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
+                    border: "none", borderRadius: 10,
+                    background: showShareMenu ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.65)",
+                    backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+                    color: "#e8eaed", cursor: "pointer", transition: "background .15s",
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="2"/>
+                    <circle cx="12" cy="12" r="2"/>
+                    <circle cx="12" cy="19" r="2"/>
+                  </svg>
+                </button>
+                {showShareMenu && (
+                  <div role="dialog" style={{
+                    position: "absolute", top: "calc(100% + 4px)", right: 0,
+                    width: "min(calc(100vw - 32px), 360px)", padding: 16,
+                    background: "#2d2e31", borderRadius: 8,
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.5)", zIndex: 200,
+                  }}>
+                    <div style={{ marginBottom: 10, fontSize: 14, fontWeight: 500, color: "#e8eaed" }}>Share meeting</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 4px 4px 12px", borderRadius: 8, background: "#3c4043", marginBottom: meetingCode ? 10 : 0 }}>
+                      <p title={inviteUrl} onClick={(e) => { const s = window.getSelection(); const r = document.createRange(); r.selectNodeContents(e.currentTarget); s?.removeAllRanges(); s?.addRange(r); }}
+                        style={{ flex: 1, minWidth: 0, margin: 0, padding: "8px 0", fontSize: 13, color: "#bdc1c6", fontFamily: "ui-monospace, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "text", userSelect: "all" }}
+                      >{inviteUrl}</p>
+                      <button type="button" onClick={copyLink} style={{ flexShrink: 0, padding: "8px 14px", fontSize: 13, fontWeight: 500, border: "none", borderRadius: 6, cursor: "pointer", background: linkCopied ? "#1b7a41" : "#8ab4f8", color: linkCopied ? "#fff" : "#202124", transition: "background .15s" }}>{linkCopied ? "Copied!" : "Copy"}</button>
+                    </div>
+                    {meetingCode && (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: 8, background: "#3c4043" }}>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: "#9aa0a6", marginBottom: 2 }}>Meeting code</div>
+                          <div style={{ fontSize: 18, fontWeight: 500, color: "#e8eaed", letterSpacing: "0.15em" }}>{meetingCode}</div>
+                        </div>
+                        <button type="button" onClick={copyMeetingCodeDigits} style={{ padding: "8px 14px", fontSize: 13, fontWeight: 500, border: "none", borderRadius: 6, cursor: "pointer", background: codeCopied ? "#1b7a41" : "rgba(255,255,255,0.1)", color: codeCopied ? "#fff" : "#e8eaed" }}>{codeCopied ? "Copied!" : "Copy"}</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {/* Bottom controls */}
+            <div style={{ display: "flex", justifyContent: "center", padding: "12px 16px 16px", background: "#202124" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button type="button" className="pc-ctrl-btn" onClick={toggleMic}
+                  data-tip={micMuted ? "Unmute" : "Mute"} aria-label={micMuted ? "Unmute" : "Mute"}
+                  style={meetingControlBtn(!micMuted)}
+                >{micMuted ? <MicOffIcon /> : <MicOnIcon />}</button>
+
+                <button type="button" className="pc-ctrl-btn" onClick={toggleVideo}
+                  data-tip={videoOff ? "Camera on" : "Camera off"} aria-label={videoOff ? "Camera on" : "Camera off"}
+                  style={meetingControlBtn(!videoOff)}
+                >{videoOff ? <CamOffIcon /> : <CamOnIcon />}</button>
+
+                {isHost && (
+                  <>
+                    <div className="pc-ctrl-divider" />
+                    {!isRecording ? (
+                      <button type="button" className="pc-ctrl-btn" onClick={startRecording}
+                        data-tip="Record" aria-label="Record" style={meetingControlBtn(false, { recording: true })}
+                      ><RecordIcon /></button>
+                    ) : (
+                      <button type="button" className="pc-ctrl-btn" onClick={stopRecording}
+                        data-tip="Stop recording" aria-label="Stop recording"
+                        style={{ ...meetingControlBtn(true, { recording: true }), animation: "pulse 2s infinite" }}
+                      ><StopRecordIcon /></button>
+                    )}
+                  </>
+                )}
+
+                <div className="pc-ctrl-divider" />
+
+                <button type="button" className="pc-ctrl-btn pc-ctrl-danger" onClick={leaveChannel}
+                  data-tip={isHost ? "End meeting" : "Leave call"} aria-label={isHost ? "End meeting" : "Leave call"}
+                  style={meetingControlBtn(false, { danger: true, wide: true })}
+                >
+                  <PhoneOffIcon />
+                  <span style={{ fontWeight: 500, fontSize: 14 }}>{isHost ? "End" : "Leave"}</span>
+                </button>
+              </div>
             </div>
           </div>
         </>
