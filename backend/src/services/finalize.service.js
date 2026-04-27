@@ -114,10 +114,70 @@ export const finalizeSessionService = async (sessionId) => {
 
     /* ================= GRID LAYOUT ================= */
     const count = inputVideos.length;
-    const cols = Math.ceil(Math.sqrt(count));
-    const TILE_W = Number(process.env.FINAL_TILE_W || "480") || 480;
-    const TILE_H = Number(process.env.FINAL_TILE_H || "270") || 270;
 
+    /* ============ SINGLE PARTICIPANT — LOSSLESS COPY ============ */
+    // For a single participant, just copy the original stream as-is with
+    // no re-encoding.  This preserves the full original quality (1080p, 4K,
+    // whatever the camera captured) and is near-instant.
+    if (count === 1) {
+      const outputPath = path.join(tempDir, "meeting-final.webm");
+      const hasAudio = await hasAudioTrack(inputVideos[0]);
+
+      await new Promise((resolve, reject) => {
+        const cmd = ffmpeg().input(inputVideos[0]);
+        const opts = ["-c:v copy"];
+        if (hasAudio) {
+          opts.push("-c:a copy");
+        }
+        cmd
+          .outputOptions(opts)
+          .on("end", resolve)
+          .on("error", reject)
+          .save(outputPath);
+      });
+
+      console.log("🎬 Single-participant video copied (no re-encoding — full quality)");
+
+      const buffer = fs.readFileSync(outputPath);
+
+      const uploaded = await uploadToB2({
+        buffer,
+        fileName: `sessions/${sessionId}/final-meeting.webm`,
+        contentType: "video/webm",
+      });
+
+      await Session.findByIdAndUpdate(sessionId, {
+        finalMeetingFileId: uploaded.fileId,
+      });
+
+      console.log("💾 Final meeting file saved:", uploaded.fileId);
+
+      // Transcript + Summary pipeline (same as multi-participant)
+      await runPostProcessing(sessionId, participantVideos, tempDir);
+      return;
+    }
+
+    /* ============ MULTI-PARTICIPANT — NATIVE QUALITY GRID ============ */
+    // Detect each input's native resolution and use it as-is (no downscaling).
+    // The final canvas will be the sum of all tiles at their original resolution.
+    const getVideoResolution = (filePath) =>
+      new Promise((resolve) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+          if (err) return resolve({ w: 1920, h: 1080 }); // safe fallback
+          const vs = (metadata?.streams || []).find((s) => s.codec_type === "video");
+          resolve({ w: vs?.width || 1920, h: vs?.height || 1080 });
+        });
+      });
+
+    const resolutions = await Promise.all(inputVideos.map(getVideoResolution));
+
+    // Use the maximum resolution found as the per-tile size so all tiles
+    // are uniform without downscaling any participant.
+    const TILE_W = Math.max(...resolutions.map((r) => r.w));
+    const TILE_H = Math.max(...resolutions.map((r) => r.h));
+    console.log(`📐 Grid tile size: ${TILE_W}×${TILE_H} (native, no downscale)`);
+
+    const cols = Math.ceil(Math.sqrt(count));
     const layout = [];
     for (let i = 0; i < count; i++) {
       const x = (i % cols) * TILE_W;
@@ -141,16 +201,20 @@ export const finalizeSessionService = async (sessionId) => {
 
       const filters = [];
 
-      if (count === 1) {
+      for (let i = 0; i < count; i++) {
+        // Scale UP to tile size if needed, but never compress down.
+        // `force_original_aspect_ratio: decrease` + pad ensures uniform tiles
+        // without stretching or cropping.
         filters.push({
           filter: "scale",
           options: {
             w: TILE_W,
             h: TILE_H,
             force_original_aspect_ratio: "decrease",
+            flags: "lanczos",
           },
-          inputs: "0:v",
-          outputs: "vs0",
+          inputs: `${i}:v`,
+          outputs: `vs${i}`,
         });
         filters.push({
           filter: "pad",
@@ -161,34 +225,21 @@ export const finalizeSessionService = async (sessionId) => {
             y: "(oh-ih)/2",
             color: "black",
           },
-          inputs: "vs0",
-          outputs: "vout",
-        });
-      } else {
-        for (let i = 0; i < count; i++) {
-          filters.push({
-            filter: "scale",
-            options: {
-              w: TILE_W,
-              h: TILE_H,
-              force_original_aspect_ratio: "decrease",
-            },
-            inputs: `${i}:v`,
-            outputs: `v${i}`,
-          });
-        }
-
-        filters.push({
-          filter: "xstack",
-          options: {
-            inputs: count,
-            layout: layout.join("|"),
-            fill: "black",
-          },
-          inputs: Array.from({ length: count }, (_, i) => `v${i}`),
-          outputs: "vout",
+          inputs: `vs${i}`,
+          outputs: `v${i}`,
         });
       }
+
+      filters.push({
+        filter: "xstack",
+        options: {
+          inputs: count,
+          layout: layout.join("|"),
+          fill: "black",
+        },
+        inputs: Array.from({ length: count }, (_, i) => `v${i}`),
+        outputs: "vout",
+      });
 
       if (audioInputIndexes.length > 0) {
         if (audioInputIndexes.length === 1) {
@@ -223,24 +274,25 @@ export const finalizeSessionService = async (sessionId) => {
       }
 
       const codec = String(process.env.FINAL_VIDEO_CODEC || "vp8").toLowerCase();
-      const videoBitrate = String(process.env.FINAL_VIDEO_BITRATE || "2M");
-
+      // CRF mode: quality-based encoding (lower = better, 4 = near-lossless)
+      const crf = Number(process.env.FINAL_VIDEO_CRF || "4");
+      // b:v 0 tells libvpx to use pure CRF mode (no bitrate cap)
       const outputOptions = ["-map [vout]", "-pix_fmt yuv420p"];
 
-      // Fast defaults for dev/production: VP8 is significantly faster than VP9.
-      // Keep WebM container so the frontend still works without changes.
       if (codec === "vp9") {
-        outputOptions.push("-c:v libvpx-vp9", "-b:v", videoBitrate);
-        // Speed/quality tradeoff knobs (higher cpu-used -> faster, lower quality)
-        outputOptions.push("-deadline", "realtime", "-cpu-used", "4");
+        outputOptions.push("-c:v libvpx-vp9");
+        outputOptions.push("-crf", String(crf), "-b:v", "0");
+        outputOptions.push("-deadline", "good", "-cpu-used", "1");
       } else {
-        // vp8
-        outputOptions.push("-c:v libvpx", "-b:v", videoBitrate);
-        outputOptions.push("-deadline", "realtime", "-cpu-used", "4");
+        // VP8: uses -crf with -b:v 0 for quality mode, -qmin/-qmax for bounds
+        outputOptions.push("-c:v libvpx");
+        outputOptions.push("-crf", String(crf), "-b:v", "0");
+        outputOptions.push("-qmin", String(crf), "-qmax", String(crf + 6));
+        outputOptions.push("-deadline", "good", "-cpu-used", "1");
       }
 
       if (audioInputIndexes.length > 0) {
-        outputOptions.push("-map [aout]", "-c:a libopus", "-b:a 128k");
+        outputOptions.push("-map [aout]", "-c:a libopus", "-b:a 192k");
       }
 
       command
@@ -266,65 +318,8 @@ export const finalizeSessionService = async (sessionId) => {
     });
 
     console.log("💾 Final meeting file saved:", uploaded.fileId);
-    console.log("🧠 Generating transcript...");
 
-    const transcriptOk = await generateTranscript(sessionId, participantVideos);
-    if (transcriptOk) {
-      console.log("✅ Transcript generated");
-    } else {
-      console.warn("⚠️ Transcript generation failed (see transcription logs above)");
-    }
-
-    // After transcript is stored on the Session document, also upload a clean .txt version to B2
-    const sessionWithTranscript = await Session.findById(sessionId);
-    if (
-      sessionWithTranscript &&
-      Array.isArray(sessionWithTranscript.transcript) &&
-      sessionWithTranscript.transcript.length > 0
-    ) {
-      const sorted = [...sessionWithTranscript.transcript].sort(
-        (a, b) =>
-          (a.start || 0) - (b.start || 0) || (a.end || 0) - (b.end || 0)
-      );
-
-      const lines = sorted.map((t) => {
-        const speaker = t.speaker || "Speaker";
-        const text = t.text || "";
-        return `${speaker}: ${text}`.trim();
-      });
-
-      const txt = lines.join("\n");
-
-      try {
-        const transcriptUpload = await uploadToB2({
-          buffer: Buffer.from(txt, "utf-8"),
-          fileName: `sessions/${sessionId}/transcript.txt`,
-          contentType: "text/plain; charset=utf-8",
-        });
-
-        sessionWithTranscript.transcriptFileId = transcriptUpload.fileId;
-        await sessionWithTranscript.save();
-
-        console.log("💾 Transcript .txt saved:", transcriptUpload.fileId);
-      } catch (e) {
-        console.warn("⚠️ Failed to upload transcript .txt:", e.message);
-      }
-
-      // AI Summary (non-blocking for finalize success)
-      try {
-        console.log("🤖 Generating AI summary…");
-        const summary = await generateMeetingSummary({ transcriptText: txt });
-        await Session.findByIdAndUpdate(sessionId, {
-          meetingSummary: {
-            ...summary,
-            generatedAt: new Date(),
-          },
-        });
-        console.log("✅ AI summary saved");
-      } catch (e) {
-        console.warn("⚠️ AI summary failed:", e.message);
-      }
-    }
+    await runPostProcessing(sessionId, participantVideos, tempDir);
 
   } catch (err) {
     console.error("❌ Finalize service failed:", {
@@ -334,3 +329,68 @@ export const finalizeSessionService = async (sessionId) => {
     });
   }
 };
+
+/**
+ * Shared post-processing: transcript generation, .txt upload, and AI summary.
+ */
+async function runPostProcessing(sessionId, participantVideos) {
+  console.log("🧠 Generating transcript...");
+
+  const transcriptOk = await generateTranscript(sessionId, participantVideos);
+  if (transcriptOk) {
+    console.log("✅ Transcript generated");
+  } else {
+    console.warn("⚠️ Transcript generation failed (see transcription logs above)");
+  }
+
+  // After transcript is stored on the Session document, also upload a clean .txt version to B2
+  const sessionWithTranscript = await Session.findById(sessionId);
+  if (
+    sessionWithTranscript &&
+    Array.isArray(sessionWithTranscript.transcript) &&
+    sessionWithTranscript.transcript.length > 0
+  ) {
+    const sorted = [...sessionWithTranscript.transcript].sort(
+      (a, b) =>
+        (a.start || 0) - (b.start || 0) || (a.end || 0) - (b.end || 0)
+    );
+
+    const lines = sorted.map((t) => {
+      const speaker = t.speaker || "Speaker";
+      const text = t.text || "";
+      return `${speaker}: ${text}`.trim();
+    });
+
+    const txt = lines.join("\n");
+
+    try {
+      const transcriptUpload = await uploadToB2({
+        buffer: Buffer.from(txt, "utf-8"),
+        fileName: `sessions/${sessionId}/transcript.txt`,
+        contentType: "text/plain; charset=utf-8",
+      });
+
+      sessionWithTranscript.transcriptFileId = transcriptUpload.fileId;
+      await sessionWithTranscript.save();
+
+      console.log("💾 Transcript .txt saved:", transcriptUpload.fileId);
+    } catch (e) {
+      console.warn("⚠️ Failed to upload transcript .txt:", e.message);
+    }
+
+    // AI Summary (non-blocking for finalize success)
+    try {
+      console.log("🤖 Generating AI summary…");
+      const summary = await generateMeetingSummary({ transcriptText: txt });
+      await Session.findByIdAndUpdate(sessionId, {
+        meetingSummary: {
+          ...summary,
+          generatedAt: new Date(),
+        },
+      });
+      console.log("✅ AI summary saved");
+    } catch (e) {
+      console.warn("⚠️ AI summary failed:", e.message);
+    }
+  }
+}

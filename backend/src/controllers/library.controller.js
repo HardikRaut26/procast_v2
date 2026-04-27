@@ -140,23 +140,38 @@ export const getVideoLibrary = async (req, res) => {
     };
 
     const videos = await Promise.all(
-      sessions.map(async (s) => ({
-        sessionId: s._id,
-        fileId: s.finalMeetingFileId || null,
-        // IMPORTANT:
-        // Avoid calling B2 for signed URLs during library load.
-        // B2 download/transaction caps can cause 403 "download_cap_exceeded"
-        // and break the entire Library UI (including transcript view).
-        url: null,
-        createdAt: s.createdAt,
-        duration: s.duration,
-        status: s.status,
-        recordingState: s.recordingState,
-        transcriptionStatus: s.transcriptionStatus,
-        processing: isProcessing(s),
-        transcriptFileId: s.transcriptFileId || null,
-        pipelineLogs: getPipelineLogs(s),
-      }))
+      sessions.map(async (s) => {
+        // Build per-participant video list from participantFiles map
+        const participantVideos = [];
+        if (s.participantFiles && s.participantFiles.size > 0) {
+          for (const [userId, fileId] of s.participantFiles.entries()) {
+            // Try to find the participant's name from agoraUidMap
+            const uidEntry = (s.agoraUidMap || []).find(
+              (m) => String(m.userId) === String(userId)
+            );
+            participantVideos.push({
+              userId,
+              fileId,
+              name: uidEntry?.name || null,
+            });
+          }
+        }
+
+        return {
+          sessionId: s._id,
+          fileId: s.finalMeetingFileId || null,
+          url: null,
+          createdAt: s.createdAt,
+          duration: s.duration,
+          status: s.status,
+          recordingState: s.recordingState,
+          transcriptionStatus: s.transcriptionStatus,
+          processing: isProcessing(s),
+          transcriptFileId: s.transcriptFileId || null,
+          pipelineLogs: getPipelineLogs(s),
+          participantVideos,
+        };
+      })
     );
 
 
@@ -208,11 +223,33 @@ export const downloadVideoStream = async (req, res) => {
       return res.status(400).json({ message: "fileId required" });
     }
 
-    // Verify ownership: only the host can download
-    const session = await Session.findOne({
-      $or: [{ finalMeetingFileId: fileId }, { transcriptFileId: fileId }],
+    // Verify ownership: only the host can download (final video, transcript, or participant files)
+    // Step 1: Check standard file fields
+    let session = await Session.findOne({
+      $or: [
+        { finalMeetingFileId: fileId },
+        { transcriptFileId: fileId },
+      ],
       host: req.user._id,
     });
+
+    // Step 2: If not found, check participantFiles map values
+    // (Mongoose Maps can't be queried by value directly)
+    if (!session) {
+      const candidates = await Session.find({
+        host: req.user._id,
+        participantFiles: { $exists: true, $ne: {} },
+      }).select("participantFiles");
+
+      session = candidates.find((s) => {
+        if (!s.participantFiles) return false;
+        for (const val of s.participantFiles.values()) {
+          if (String(val) === String(fileId)) return true;
+        }
+        return false;
+      }) || null;
+    }
+
     if (!session) {
       return res.status(403).json({ message: "You can only download your own recordings" });
     }

@@ -37,6 +37,7 @@ function Library() {
   const [downloadingId, setDownloadingId] = useState("");
   const [previewEnabledByFileId, setPreviewEnabledByFileId] = useState({});
   const [watchingId, setWatchingId] = useState("");
+  const [expandedDownloadCard, setExpandedDownloadCard] = useState("");
 
   const [isTranscriptModalOpen, setIsTranscriptModalOpen] = useState(false);
   const [transcriptItems, setTranscriptItems] = useState([]);
@@ -134,6 +135,42 @@ function Library() {
         );
       } else if (video?.url) {
         window.open(video.url, "_blank", "noreferrer");
+      }
+    } finally {
+      setDownloadingId("");
+    }
+  };
+
+  const downloadParticipantVideo = async (pv, sessionNumber) => {
+    const fileId = String(pv?.fileId || "");
+    if (!fileId) return;
+
+    const safeName = (pv.name || "participant").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `procast-session-${String(sessionNumber).padStart(2, "0")}-${safeName}.webm`;
+
+    try {
+      setDownloadingId(fileId);
+      const res = await api.get(`/library/${fileId}/download`, {
+        responseType: "blob",
+      });
+      const blob = res.data;
+      const objectUrl = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      console.warn("Participant download failed", e);
+      const status = e?.response?.status;
+      const msg = String(e?.response?.data?.message || e?.message || "");
+      if (status === 403 || msg.toLowerCase().includes("download_cap_exceeded")) {
+        alert("B2 download limit reached. Try again later.");
+      } else {
+        alert("Download failed. Try again.");
       }
     } finally {
       setDownloadingId("");
@@ -776,13 +813,19 @@ function Library() {
                   <div style={styles.actions}>
                     <button
                       type="button"
-                      onClick={() => downloadVideo(video, idx)}
-                      style={styles.actionBtn}
+                      onClick={() => setExpandedDownloadCard((prev) =>
+                        prev === String(video.sessionId) ? "" : String(video.sessionId)
+                      )}
+                      style={{
+                        ...styles.actionBtn,
+                        ...(expandedDownloadCard === String(video.sessionId)
+                          ? { background: "#111", color: "#fff" }
+                          : {}),
+                      }}
                       className="pc-btn"
-                      disabled={downloadingId === String(video?.fileId || "")}
                     >
-                      {downloadingId === String(video?.fileId || "")
-                        ? "Downloading…"
+                      {expandedDownloadCard === String(video.sessionId)
+                        ? "Close downloads"
                         : copy.download}
                     </button>
                     {video.transcriptFileId && (
@@ -796,7 +839,7 @@ function Library() {
                         }
                       >
                         {downloadingId === String(video?.transcriptFileId || "")
-                          ? "Preparing…"
+                          ? "Preparing\u2026"
                           : "Transcript (.txt)"}
                       </button>
                     )}
@@ -813,7 +856,7 @@ function Library() {
                       >
                         {transcriptLoading &&
                         transcriptLoadingFor === String(video.sessionId || "")
-                          ? "Loading…"
+                          ? "Loading\u2026"
                           : "View transcript"}
                       </button>
                     )}
@@ -825,7 +868,7 @@ function Library() {
                       disabled={watchingId === String(video?.fileId || "")}
                     >
                       {watchingId === String(video?.fileId || "")
-                        ? "Opening…"
+                        ? "Opening\u2026"
                         : copy.open}
                     </button>
                     <button
@@ -837,6 +880,130 @@ function Library() {
                       {copy.delete}
                     </button>
                   </div>
+
+                  {/* Expandable download panel */}
+                  {expandedDownloadCard === String(video.sessionId) && (
+                    <div style={{
+                      marginTop: 12,
+                      padding: "14px",
+                      borderRadius: 14,
+                      background: "rgba(0,0,0,0.02)",
+                      border: "1px solid rgba(0,0,0,0.06)",
+                      animation: "pcEnter 0.25s ease both",
+                    }}>
+                      <div style={{
+                        fontSize: 12, fontWeight: 700, color: "#555",
+                        textTransform: "uppercase", letterSpacing: "0.04em",
+                        marginBottom: 10,
+                      }}>
+                        Download Options
+                      </div>
+
+                      {/* Final merged video */}
+                      <div style={{
+                        display: "flex", alignItems: "center",
+                        justifyContent: "space-between", gap: 8,
+                        padding: "10px 12px", borderRadius: 10,
+                        background: "#fff",
+                        border: "1px solid rgba(0,0,0,0.08)",
+                        marginBottom: Array.isArray(video.participantVideos) && video.participantVideos.length > 0 ? 8 : 0,
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#111" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                          </svg>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>Final Merged Video</div>
+                            <div style={{ fontSize: 11, color: "#888", marginTop: 1 }}>Combined grid of all participants</div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="pc-btn"
+                          onClick={() => downloadVideo(video, idx)}
+                          disabled={downloadingId === String(video?.fileId || "")}
+                          style={{
+                            padding: "8px 16px", fontSize: 13, fontWeight: 700,
+                            border: "none", borderRadius: 8,
+                            background: "#111", color: "#fff",
+                            cursor: "pointer", whiteSpace: "nowrap",
+                          }}
+                        >
+                          {downloadingId === String(video?.fileId || "") ? "Saving\u2026" : "Download"}
+                        </button>
+                      </div>
+
+                      {/* Individual participant recordings */}
+                      {Array.isArray(video.participantVideos) && video.participantVideos.length > 0 && (
+                        <>
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 6,
+                            margin: "12px 0 8px",
+                          }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                              <circle cx="9" cy="7" r="4"/>
+                              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                            </svg>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                              Individual Recordings
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {video.participantVideos.map((pv) => (
+                              <div
+                                key={pv.fileId}
+                                style={{
+                                  display: "flex", alignItems: "center",
+                                  justifyContent: "space-between", gap: 8,
+                                  padding: "8px 12px", borderRadius: 10,
+                                  background: "#fff",
+                                  border: "1px solid rgba(0,0,0,0.06)",
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                  <div style={{
+                                    width: 28, height: 28, borderRadius: "50%",
+                                    background: "#e8eaed", display: "flex",
+                                    alignItems: "center", justifyContent: "center",
+                                    fontSize: 11, fontWeight: 700, color: "#5f6368",
+                                    flexShrink: 0,
+                                  }}>
+                                    {(pv.name || "?").charAt(0).toUpperCase()}
+                                  </div>
+                                  <span style={{
+                                    fontSize: 13, fontWeight: 600, color: "#222",
+                                    overflow: "hidden", textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}>
+                                    {pv.name || "Participant"}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="pc-btn"
+                                  onClick={() => downloadParticipantVideo(pv, sessionNumber)}
+                                  disabled={downloadingId === String(pv.fileId)}
+                                  style={{
+                                    padding: "6px 14px", fontSize: 12, fontWeight: 600,
+                                    border: "1px solid rgba(0,0,0,0.12)",
+                                    borderRadius: 8, background: "#fff",
+                                    cursor: "pointer", color: "#111",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {downloadingId === String(pv.fileId) ? "Saving\u2026" : "Download"}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
