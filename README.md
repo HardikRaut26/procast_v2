@@ -6,10 +6,12 @@
 
 A full-stack, real-time podcast & meeting recording platform with multi-participant video calls, AI-powered transcription, intelligent summaries, multi-language translation, and a cloud-based video library.
 
-[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-procast--v2.netlify.app-00C896?style=for-the-badge)](https://procast-v2.netlify.app/)
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES2024-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![Express](https://img.shields.io/badge/Express-5-000000?style=for-the-badge&logo=express&logoColor=white)](https://expressjs.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/atlas)
+[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-procast--v2.netlify.app-00C896?style=for-the-badge)](https://procast-v2.netlify.app/)
 
 </div>
 
