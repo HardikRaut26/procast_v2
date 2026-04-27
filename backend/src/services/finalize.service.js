@@ -274,21 +274,24 @@ export const finalizeSessionService = async (sessionId) => {
       }
 
       const codec = String(process.env.FINAL_VIDEO_CODEC || "vp8").toLowerCase();
-      // CRF mode: quality-based encoding (lower = better, 4 = near-lossless)
-      const crf = Number(process.env.FINAL_VIDEO_CRF || "4");
+      // CRF mode: quality-based encoding (lower = better, 23 = great quality + fast)
+      // Override with FINAL_VIDEO_CRF env var if you need higher quality on powerful hardware
+      const crf = Number(process.env.FINAL_VIDEO_CRF || "23");
+      // cpu-used: 5 = fast encoding (range 0–8 for VP9, 0–16 for VP8; higher = faster)
+      const cpuUsed = Number(process.env.FINAL_VIDEO_CPU_USED || "5");
       // b:v 0 tells libvpx to use pure CRF mode (no bitrate cap)
       const outputOptions = ["-map [vout]", "-pix_fmt yuv420p"];
 
       if (codec === "vp9") {
         outputOptions.push("-c:v libvpx-vp9");
         outputOptions.push("-crf", String(crf), "-b:v", "0");
-        outputOptions.push("-deadline", "good", "-cpu-used", "1");
+        outputOptions.push("-deadline", "good", "-cpu-used", String(cpuUsed));
       } else {
         // VP8: uses -crf with -b:v 0 for quality mode, -qmin/-qmax for bounds
         outputOptions.push("-c:v libvpx");
         outputOptions.push("-crf", String(crf), "-b:v", "0");
         outputOptions.push("-qmin", String(crf), "-qmax", String(crf + 6));
-        outputOptions.push("-deadline", "good", "-cpu-used", "1");
+        outputOptions.push("-deadline", "good", "-cpu-used", String(cpuUsed));
       }
 
       if (audioInputIndexes.length > 0) {
