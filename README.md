@@ -123,6 +123,10 @@ Create an account and start recording immediately — no credit card required.
 | **JWT (jsonwebtoken)** | Authentication tokens |
 | **bcryptjs** | Password hashing |
 | **Multer** | File upload middleware |
+| **Socket.IO** | Real-time bidirectional event communication |
+| **CORS** | Cross-origin resource sharing middleware |
+| **dotenv** | Environment variable management |
+| **form-data** | Multipart form data for file uploads to external APIs |
 | **Axios** | External API calls (Whisper, Gemini, OpenAI) |
 
 ### External Services
