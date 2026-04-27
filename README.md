@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
 
 # ◉ ProCast
 
@@ -566,4 +566,4 @@ This project is licensed under the **ISC License**.
 [🌐 Live Demo](https://procast-v2.netlify.app/) · [🐛 Report Bug](https://github.com/HardikRaut26/procast_v2/issues) · [✨ Request Feature](https://github.com/HardikRaut26/procast_v2/issues)
 
 </div>
-]]>
+
