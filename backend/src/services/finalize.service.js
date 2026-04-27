@@ -157,31 +157,25 @@ export const finalizeSessionService = async (sessionId) => {
       return;
     }
 
-    /* ============ MULTI-PARTICIPANT — GRID MERGE ============ */
-    // Detect each input's native resolution, then cap to a max tile size
-    // to keep encoding fast on free-tier servers. Override via env vars.
+    /* ============ MULTI-PARTICIPANT — NATIVE QUALITY GRID ============ */
+    // Detect each input's native resolution and use it as-is (no downscaling).
+    // The final canvas will be the sum of all tiles at their original resolution.
     const getVideoResolution = (filePath) =>
       new Promise((resolve) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
-          if (err) return resolve({ w: 1280, h: 720 }); // safe fallback
+          if (err) return resolve({ w: 1920, h: 1080 }); // safe fallback
           const vs = (metadata?.streams || []).find((s) => s.codec_type === "video");
-          resolve({ w: vs?.width || 1280, h: vs?.height || 720 });
+          resolve({ w: vs?.width || 1920, h: vs?.height || 1080 });
         });
       });
 
     const resolutions = await Promise.all(inputVideos.map(getVideoResolution));
 
-    // Cap tile size — prevents massive canvases that choke free-tier CPUs.
-    // Default 640×360 → 2-person grid = 1280×360, very fast to encode.
-    // Set FINAL_TILE_MAX_W=1280 and FINAL_TILE_MAX_H=720 for HD on powerful servers.
-    const maxTileW = Number(process.env.FINAL_TILE_MAX_W || "640");
-    const maxTileH = Number(process.env.FINAL_TILE_MAX_H || "360");
-    const rawW = Math.max(...resolutions.map((r) => r.w));
-    const rawH = Math.max(...resolutions.map((r) => r.h));
-    const TILE_W = Math.min(rawW, maxTileW);
-    const TILE_H = Math.min(rawH, maxTileH);
-    console.log(`📐 Grid tile size: ${TILE_W}×${TILE_H} (capped from ${rawW}×${rawH})`);
-
+    // Use the maximum resolution found as the per-tile size so all tiles
+    // are uniform without downscaling any participant.
+    const TILE_W = Math.max(...resolutions.map((r) => r.w));
+    const TILE_H = Math.max(...resolutions.map((r) => r.h));
+    console.log(`📐 Grid tile size: ${TILE_W}×${TILE_H} (native, no downscale)`);
 
     const cols = Math.ceil(Math.sqrt(count));
     const layout = [];
@@ -280,25 +274,21 @@ export const finalizeSessionService = async (sessionId) => {
       }
 
       const codec = String(process.env.FINAL_VIDEO_CODEC || "vp8").toLowerCase();
-      // CRF mode: quality-based encoding (lower = better, 23 = great quality + fast)
-      const crf = Number(process.env.FINAL_VIDEO_CRF || "23");
-      // cpu-used: 8 = fastest encoding; deadline: realtime = prioritize speed
-      const cpuUsed = Number(process.env.FINAL_VIDEO_CPU_USED || "8");
-      const deadline = process.env.FINAL_VIDEO_DEADLINE || "realtime";
+      // CRF mode: quality-based encoding (lower = better, 4 = near-lossless)
+      const crf = Number(process.env.FINAL_VIDEO_CRF || "4");
       // b:v 0 tells libvpx to use pure CRF mode (no bitrate cap)
       const outputOptions = ["-map [vout]", "-pix_fmt yuv420p"];
 
       if (codec === "vp9") {
         outputOptions.push("-c:v libvpx-vp9");
         outputOptions.push("-crf", String(crf), "-b:v", "0");
-        outputOptions.push("-deadline", deadline, "-cpu-used", String(cpuUsed));
+        outputOptions.push("-deadline", "good", "-cpu-used", "1");
       } else {
         // VP8: uses -crf with -b:v 0 for quality mode, -qmin/-qmax for bounds
         outputOptions.push("-c:v libvpx");
         outputOptions.push("-crf", String(crf), "-b:v", "0");
         outputOptions.push("-qmin", String(crf), "-qmax", String(crf + 6));
-        outputOptions.push("-deadline", deadline, "-cpu-used", String(cpuUsed));
-
+        outputOptions.push("-deadline", "good", "-cpu-used", "1");
       }
 
       if (audioInputIndexes.length > 0) {
