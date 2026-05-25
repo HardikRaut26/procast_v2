@@ -1538,7 +1538,7 @@ function VideoCall() {
           }}>
             {/* Video grid */}
             <div style={{ flex: 1, padding: 8, display: "flex", minHeight: 0 }}>
-              <div style={{ ...gridStyle, width: "100%", height: "100%" }}>
+              <div className={`pc-video-grid count-${participantCount}`} style={{ ...gridStyle, width: "100%", height: "100%" }}>
                 <div className="video-tile" style={{
                   position: "relative", borderRadius: 12, overflow: "hidden",
                   background: "#3c4043", width: "100%", height: "100%",
@@ -1699,7 +1699,7 @@ function VideoCall() {
             ) : null}
 
             {/* Bottom controls */}
-            <div style={{ display: "flex", justifyContent: "center", padding: "12px 16px 16px", background: "#202124" }}>
+            <div className="pc-meeting-controls" style={{ display: "flex", justifyContent: "center", padding: "12px 16px 16px", background: "#202124" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <button type="button" className="pc-ctrl-btn" onClick={toggleMic}
                   data-tip={micMuted ? "Unmute" : "Mute"} aria-label={micMuted ? "Unmute" : "Mute"}

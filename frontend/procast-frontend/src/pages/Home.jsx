@@ -87,7 +87,7 @@ function Home() {
       <section style={styles.hero}>
         <div style={styles.heroContent}>
           <AnimatedText delay={0}>
-            <h1 style={styles.heroTitle}>
+            <h1 className="pc-hero-title" style={styles.heroTitle}>
               Record, Collaborate, and
               <br />
               <span style={styles.heroHighlight}>Enhance Your Podcasts</span>
@@ -95,7 +95,7 @@ function Home() {
           </AnimatedText>
           
           <AnimatedText delay={200}>
-            <p style={styles.heroSubtitle}>
+            <p className="pc-hero-subtitle" style={styles.heroSubtitle}>
               Real-time multi-participant recording with AI transcription,
               summaries, and smart highlights. Built for creators who demand excellence.
             </p>
@@ -134,16 +134,16 @@ function Home() {
       </section>
 
       {/* FEATURES */}
-      <section id="features" style={styles.section}>
+      <section id="features" className="pc-home-section" style={styles.section}>
         <AnimatedSection>
           <p style={styles.sectionLabel}>FEATURES</p>
-          <h2 style={styles.sectionTitle}>Powerful Tools for Creators</h2>
+          <h2 className="pc-section-title" style={styles.sectionTitle}>Powerful Tools for Creators</h2>
           <p style={styles.sectionSubtitle}>
             Everything you need to produce professional-quality podcasts
           </p>
         </AnimatedSection>
 
-        <div style={styles.featuresGrid}>
+        <div className="pc-features-grid" style={styles.featuresGrid}>
           <FeatureCard 
             icon="◎" 
             title="Real-time Recording" 
@@ -184,23 +184,23 @@ function Home() {
       </section>
 
       {/* HOW IT WORKS */}
-      <section id="how-it-works" style={styles.howItWorks}>
+      <section id="how-it-works" className="pc-home-section" style={styles.howItWorks}>
         <AnimatedSection>
           <p style={styles.sectionLabel}>WORKFLOW</p>
-          <h2 style={styles.sectionTitle}>From Recording to Publishing</h2>
+          <h2 className="pc-section-title" style={styles.sectionTitle}>From Recording to Publishing</h2>
           <p style={styles.sectionSubtitle}>
             A seamless four-step process designed for efficiency
           </p>
         </AnimatedSection>
 
-        <div style={styles.stepsContainer}>
+        <div className="pc-steps-container" style={styles.stepsContainer}>
           <StepCard 
             number="01" 
             title="Create & Invite" 
             desc="Set up your session and invite guests with a single link"
             delay={0}
           />
-          <div style={styles.stepConnector}>
+          <div className="pc-step-connector" style={styles.stepConnector}>
             <div style={styles.connectorLine} />
           </div>
           <StepCard 
@@ -209,7 +209,7 @@ function Home() {
             desc="Capture perfectly synchronized multi-track sessions"
             delay={150}
           />
-          <div style={styles.stepConnector}>
+          <div className="pc-step-connector" style={styles.stepConnector}>
             <div style={styles.connectorLine} />
           </div>
           <StepCard 
@@ -218,7 +218,7 @@ function Home() {
             desc="Get instant transcripts, summaries, and highlights"
             delay={300}
           />
-          <div style={styles.stepConnector}>
+          <div className="pc-step-connector" style={styles.stepConnector}>
             <div style={styles.connectorLine} />
           </div>
           <StepCard 
@@ -231,8 +231,8 @@ function Home() {
       </section>
 
       {/* STATS */}
-      <section style={styles.statsSection}>
-        <div style={styles.statsGrid}>
+      <section className="pc-home-section" style={styles.statsSection}>
+        <div className="pc-stats-grid" style={styles.statsGrid}>
           <StatItem
             number={formatCount(liveStats.activeCreators, "50K+")}
             label="Active Creators"
@@ -247,7 +247,7 @@ function Home() {
       </section>
 
       {/* CTA */}
-      <section style={styles.cta}>
+      <section className="pc-home-section" style={styles.cta}>
         <AnimatedSection>
           <h2 style={styles.ctaTitle}>
             Ready to start your

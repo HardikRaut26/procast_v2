@@ -45,11 +45,11 @@ function Register() {
   const isSuccess = message.toLowerCase().startsWith("account created");
 
   return (
-    <div style={styles.page}>
+    <div className="pc-register-page" style={styles.page}>
       <style>{css}</style>
 
-      <div style={styles.shell}>
-        <section style={styles.copyCol}>
+      <div className="pc-register-shell" style={styles.shell}>
+        <section className="pc-register-copy" style={styles.copyCol}>
           <p style={styles.kicker}>CREATE ACCOUNT</p>
           <h1 style={styles.heroTitle}>
             Set up your
@@ -62,7 +62,7 @@ function Register() {
           </p>
         </section>
 
-        <section style={styles.formCol}>
+        <section className="pc-register-form-col" style={styles.formCol}>
           <div style={styles.card} className="pc-register-card">
             <h2 style={styles.cardTitle}>Join ProCast</h2>
             <p style={styles.cardSub}>

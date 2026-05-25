@@ -1,5 +1,4 @@
 @import 'tailwindcss';
-@import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -123,3 +122,227 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   RESPONSIVENESS MEDIA QUERIES (320px, 375px, 425px, and 2560px)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* MOBILE DEVICES & TABLETS (max-width: 768px) */
+@media (max-width: 768px) {
+  /* Navbar styling overrides */
+  .pc-mobile-menu-btn {
+    display: flex !important;
+  }
+  .pc-nav-links-desktop {
+    display: none !important;
+  }
+  .pc-navbar {
+    padding: 12px 24px !important;
+  }
+  .pc-mobile-menu-drawer {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+    border-top: 1px solid rgba(0,0,0,0.05);
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+    padding: 24px 32px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    align-items: flex-start;
+    z-index: 999;
+    animation: pcNavSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .pc-mobile-menu-drawer button {
+    font-family: inherit;
+  }
+  @keyframes pcNavSlideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Main layouts & shell containers */
+  .pc-login-shell,
+  .pc-register-shell,
+  .pc-profile-layout {
+    grid-template-columns: 1fr !important;
+    gap: 28px !important;
+  }
+
+  .pc-login-copy,
+  .pc-register-copy {
+    text-align: center !important;
+  }
+
+  .pc-login-copy p,
+  .pc-register-copy p {
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+
+  .pc-login-card,
+  .pc-register-card {
+    margin: 0 auto !important;
+    max-width: 100% !important;
+  }
+
+  .pc-login-page,
+  .pc-register-page,
+  .pc-profile-page,
+  .pc-library-page {
+    padding: 90px 16px 40px !important;
+  }
+
+  /* Home page overrides */
+  .pc-home-section {
+    padding: 60px 16px !important;
+  }
+
+  .pc-features-grid {
+    grid-template-columns: 1fr !important;
+    padding: 0 8px !important;
+  }
+
+  .pc-step-connector {
+    display: none !important; /* Hide horizontal arrows when vertical */
+  }
+
+  .pc-stats-grid {
+    gap: 32px !important;
+  }
+
+  /* Video Library page */
+  .pc-library-header {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 16px !important;
+    text-align: center !important;
+  }
+
+  .pc-library-header-right {
+    justify-content: center !important;
+  }
+
+  .pc-library-toolbar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px !important;
+  }
+
+  .pc-library-search {
+    max-width: 100% !important;
+  }
+
+  .pc-library-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important;
+    padding: 0 4px !important;
+  }
+
+  /* Video Call View */
+  .pc-video-grid {
+    grid-auto-rows: 1fr !important;
+    gap: 10px !important;
+    min-height: 180px !important;
+  }
+
+  /* Force video grid rows count-2 to stack on mobile */
+  .pc-video-grid.count-2 {
+    grid-template-columns: 1fr !important;
+  }
+  .pc-video-grid.count-3,
+  .pc-video-grid.count-4,
+  .pc-video-grid.count-5 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* EXTRA SMALL MOBILE DEVICES (max-width: 425px) */
+@media (max-width: 425px) {
+  .pc-home-section {
+    padding: 48px 12px !important;
+  }
+
+  .pc-hero-title {
+    font-size: clamp(28px, 10vw, 42px) !important;
+    letter-spacing: -1px !important;
+  }
+
+  .pc-hero-subtitle {
+    font-size: 16px !important;
+    margin-bottom: 24px !important;
+  }
+
+  .pc-section-title {
+    font-size: 28px !important;
+  }
+
+  .pc-meeting-controls {
+    padding: 10px 10px 12px !important;
+  }
+
+  .pc-ctrl-btn {
+    width: 40px !important;
+    height: 40px !important;
+    font-size: 16px !important;
+  }
+
+  .pc-ctrl-btn.pc-ctrl-danger {
+    min-width: 72px !important;
+    height: 40px !important;
+    padding: 0 10px !important;
+  }
+
+  .pc-ctrl-btn.pc-ctrl-danger span {
+    font-size: 12px !important;
+  }
+
+  .pc-ctrl-divider {
+    height: 18px !important;
+    margin: 0 4px !important;
+  }
+  
+  .pc-video-grid.count-3 {
+    grid-template-columns: 1fr !important; /* Stack all 3 on tiny screens */
+  }
+}
+
+/* ULTRA-WIDE DESKTOP / 4K MONITORS (min-width: 2560px) */
+@media (min-width: 2560px) {
+  /* Center and cap content widths to keep it elegant and readable */
+  .pc-home-section > div,
+  .pc-login-shell,
+  .pc-register-shell,
+  .pc-profile-layout,
+  .pc-library-header,
+  .pc-library-toolbar,
+  .pc-library-grid,
+  .pc-nav-inner {
+    max-width: 1600px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    width: 100% !important;
+  }
+
+  /* Expand grids layout slightly for huge displays */
+  .pc-features-grid {
+    max-width: 1600px !important;
+  }
+
+  .pc-library-grid {
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important;
+  }
+
+  .pc-hero-title {
+    font-size: 72px !important;
+  }
+  
+  .pc-hero-subtitle {
+    font-size: 24px !important;
+  }
+}
+

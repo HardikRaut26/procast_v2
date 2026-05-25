@@ -56,11 +56,11 @@ function Login() {
     message.toLowerCase().startsWith("account created");
 
   return (
-    <div style={styles.page}>
+    <div className="pc-login-page" style={styles.page}>
       <style>{css}</style>
 
-      <div style={styles.shell}>
-        <section style={styles.copyCol}>
+      <div className="pc-login-shell" style={styles.shell}>
+        <section className="pc-login-copy" style={styles.copyCol}>
           <p style={styles.kicker}>LOGIN FIRST</p>
           <h1 style={styles.heroTitle}>
             Sign in to start
@@ -73,7 +73,7 @@ function Login() {
           </p>
         </section>
 
-        <section style={styles.formCol}>
+        <section className="pc-login-form-col" style={styles.formCol}>
           <div style={styles.card} className="pc-login-card">
             <h2 style={styles.cardTitle}>Welcome back</h2>
             <p style={styles.cardSub}>

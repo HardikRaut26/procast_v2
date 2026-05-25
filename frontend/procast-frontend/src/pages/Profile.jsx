@@ -64,12 +64,12 @@ function Profile() {
   }
 
   return (
-    <div style={styles.page}>
+    <div className="pc-profile-page" style={styles.page}>
       <style>{css}</style>
 
-      <div style={styles.layout}>
+      <div className="pc-profile-layout" style={styles.layout}>
         {/* Left: profile card */}
-        <section style={styles.leftCol}>
+        <section className="pc-profile-left" style={styles.leftCol}>
           <div style={styles.profileCard} className="pc-profile-card">
             <div style={styles.avatarWrap}>
               <div style={styles.avatarCircle}>{initials}</div>
@@ -100,7 +100,7 @@ function Profile() {
         </section>
 
         {/* Right: settings-like panels */}
-        <section style={styles.rightCol}>
+        <section className="pc-profile-right" style={styles.rightCol}>
           <div style={styles.panel}>
             <div style={styles.panelHeader}>
               <div>

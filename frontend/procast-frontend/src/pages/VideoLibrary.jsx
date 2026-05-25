@@ -396,7 +396,7 @@ function Library() {
   }, [hasActiveProcessing, loadVideos]);
 
   return (
-    <div style={styles.page}>
+    <div className="pc-library-page" style={styles.page}>
       <style>{css}</style>
 
       {isTranscriptModalOpen && (
@@ -640,14 +640,14 @@ function Library() {
         </div>
       )}
 
-      <div style={styles.header}>
+      <div className="pc-library-header" style={styles.header}>
         <div>
           <p style={styles.kicker}>{copy.kicker}</p>
           <h1 style={styles.title}>{copy.title}</h1>
           <p style={styles.subtitle}>{copy.subtitle}</p>
         </div>
 
-        <div style={styles.headerRight}>
+        <div className="pc-library-header-right" style={styles.headerRight}>
           {hasActiveProcessing ? (
             <div style={styles.liveBadge}>{copy.autoRefreshActive}</div>
           ) : null}
@@ -666,8 +666,8 @@ function Library() {
         </div>
       </div>
 
-      <div style={styles.toolbar}>
-        <div style={styles.searchWrap}>
+      <div className="pc-library-toolbar" style={styles.toolbar}>
+        <div className="pc-library-search" style={styles.searchWrap}>
           <span style={styles.searchIcon}>⌕</span>
           <input
             value={query}
@@ -686,7 +686,7 @@ function Library() {
       )}
 
       {loading ? (
-        <div style={styles.grid}>
+        <div className="pc-library-grid" style={styles.grid}>
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} style={styles.skeletonCard} className="pc-skeleton">
               <div style={styles.skeletonVideo} />
@@ -706,7 +706,7 @@ function Library() {
           </p>
         </div>
       ) : (
-        <div style={styles.grid}>
+        <div className="pc-library-grid" style={styles.grid}>
           {filteredVideos.map((video, idx) => (
             (() => {
               const badgeKey = String(video?.sessionId || video?.fileId || "");

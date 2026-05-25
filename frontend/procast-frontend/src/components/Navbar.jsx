@@ -2,16 +2,19 @@
 
 import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Menu, X } from "lucide-react";
 
 export default function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [token, setToken] = useState(null);
   const [scrolled, setScrolled] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     // Check token on mount and whenever location changes
     setToken(localStorage.getItem("token"));
+    setMobileMenuOpen(false); // Close mobile menu when navigating
 
     const handleScroll = () => {
       setScrolled(window.scrollY > 20);
@@ -130,43 +133,86 @@ export default function Navbar() {
 
   return (
     <nav
+      className="pc-navbar"
       style={{
         ...styles.nav,
         background: navBackground,
         boxShadow: scrolled || isCallPage ? "0 4px 30px rgba(0,0,0,0.1)" : "none",
       }}
     >
-      <Link to="/" style={{ textDecoration: "none", color: "inherit" }}>
-        <div style={styles.logo}>
-          <span style={styles.logoIcon}>◉</span>
-          <span style={styles.logoText}>ProCast</span>
+      <div className="pc-nav-inner" style={styles.navInner}>
+        <Link to="/" style={{ textDecoration: "none", color: "inherit" }}>
+          <div style={styles.logo}>
+            <span style={styles.logoIcon}>◉</span>
+            <span style={styles.logoText}>ProCast</span>
+          </div>
+        </Link>
+
+        {/* Desktop links */}
+        <div className="pc-nav-links-desktop" style={styles.navLinks}>
+          <NavItem onClick={handleHomeClick}>Home</NavItem>
+          <NavItem onClick={() => handleSectionClick("features")}>Features</NavItem>
+          <NavItem onClick={() => handleSectionClick("how-it-works")}>How it Works</NavItem>
+
+          {!token ? (
+            <>
+              <NavItem to="/login">Sign In</NavItem>
+              <button
+                type="button"
+                style={styles.navButton}
+                onClick={handleGetStartedClick}
+              >
+                Get Started
+              </button>
+            </>
+          ) : (
+            <>
+              <NavItem onClick={handleCallClick}>Call</NavItem>
+              <NavItem to="/library">Library</NavItem>
+              <NavItem to="/profile">Profile</NavItem>
+            </>
+          )}
         </div>
-      </Link>
 
-      <div style={styles.navLinks}>
-        <NavItem onClick={handleHomeClick}>Home</NavItem>
-        <NavItem onClick={() => handleSectionClick("features")}>Features</NavItem>
-        <NavItem onClick={() => handleSectionClick("how-it-works")}>How it Works</NavItem>
-
-        {!token ? (
-          <>
-            <NavItem to="/login">Sign In</NavItem>
-            <button
-              type="button"
-              style={styles.navButton}
-              onClick={handleGetStartedClick}
-            >
-              Get Started
-            </button>
-          </>
-        ) : (
-          <>
-            <NavItem onClick={handleCallClick}>Call</NavItem>
-            <NavItem to="/library">Library</NavItem>
-            <NavItem to="/profile">Profile</NavItem>
-          </>
-        )}
+        {/* Mobile menu toggle */}
+        <button
+          type="button"
+          className="pc-mobile-menu-btn"
+          style={styles.mobileMenuBtn}
+          onClick={() => setMobileMenuOpen((o) => !o)}
+          aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+        >
+          {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
       </div>
+
+      {/* Mobile dropdown menu */}
+      {mobileMenuOpen && (
+        <div className="pc-mobile-menu-drawer">
+          <NavItem onClick={() => { handleHomeClick(); setMobileMenuOpen(false); }}>Home</NavItem>
+          <NavItem onClick={() => { handleSectionClick("features"); setMobileMenuOpen(false); }}>Features</NavItem>
+          <NavItem onClick={() => { handleSectionClick("how-it-works"); setMobileMenuOpen(false); }}>How it Works</NavItem>
+
+          {!token ? (
+            <>
+              <NavItem to="/login" onClick={() => setMobileMenuOpen(false)}>Sign In</NavItem>
+              <button
+                type="button"
+                style={{ ...styles.navButton, width: "100%", marginTop: 8 }}
+                onClick={() => { handleGetStartedClick(); setMobileMenuOpen(false); }}
+              >
+                Get Started
+              </button>
+            </>
+          ) : (
+            <>
+              <NavItem onClick={() => { handleCallClick(); setMobileMenuOpen(false); }}>Call</NavItem>
+              <NavItem to="/library" onClick={() => setMobileMenuOpen(false)}>Library</NavItem>
+              <NavItem to="/profile" onClick={() => setMobileMenuOpen(false)}>Profile</NavItem>
+            </>
+          )}
+        </div>
+      )}
     </nav>
   );
 }
@@ -177,13 +223,27 @@ const styles = {
     top: 0,
     left: 0,
     right: 0,
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     padding: '16px 48px',
     backdropFilter: 'blur(20px)',
     zIndex: 1000,
     transition: 'all 0.3s ease',
+  },
+  navInner: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    margin: '0 auto',
+  },
+  mobileMenuBtn: {
+    display: 'none', // Shown only on mobile in CSS
+    background: 'none',
+    border: 'none',
+    color: '#000',
+    cursor: 'pointer',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
   },
   logo: {
     display: 'flex',
