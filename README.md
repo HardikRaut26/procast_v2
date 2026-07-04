@@ -42,7 +42,7 @@ A full-stack, real-time podcast & meeting recording platform with multi-particip
 
 **ProCast** is an end-to-end podcasting and meeting platform that lets creators host multi-participant video sessions, record them in studio quality, and automatically generate AI transcripts, summaries, and action items — all from a single dashboard.
 
-The platform captures each participant's audio/video independently using **Agora RTC**, uploads chunks to **Backblaze B2** cloud storage in real time, then merges them into a final grid video using **FFmpeg** on the server. After merging, an AI pipeline (Whisper + Gemini/OpenAI) transcribes the audio, generates a structured meeting summary, and makes everything accessible through a beautiful video library with translation support.
+The platform captures each participant's audio/video independently using **WebRTC**, uploads chunks to **Backblaze B2** cloud storage in real time, then merges them into a final grid video using **FFmpeg** on the server. After merging, an AI pipeline (Whisper + Gemini/OpenAI) transcribes the audio, generates a structured meeting summary, and makes everything accessible through a beautiful video library with translation support.
 
 ---
 
@@ -57,7 +57,7 @@ Create an account and start recording immediately — no credit card required.
 ## ✨ Key Features
 
 ### 🎥 Real-Time Video Calls
-- Multi-participant video conferencing powered by **Agora RTC SDK**
+- Multi-participant video conferencing powered by **WebRTC**
 - Auto-detection of camera resolution (360p → 4K) with adaptive bitrate
 - Google Meet-inspired UI with mic/camera toggles, participant avatars, and screen layout
 - Host controls: start/stop recording, end meeting for all participants
@@ -107,7 +107,7 @@ Create an account and start recording immediately — no credit card required.
 |---|---|
 | **React 19** | UI framework (via Vite) |
 | **React Router 7** | Client-side routing |
-| **Agora RTC SDK** | Real-time video/audio communication |
+| **WebRTC** | Real-time video/audio communication |
 | **Framer Motion** | Page transitions and animations |
 | **Lucide React** | Icon library |
 | **Axios** | HTTP client for API calls |
@@ -119,7 +119,7 @@ Create an account and start recording immediately — no credit card required.
 |---|---|
 | **Node.js + Express 5** | REST API server |
 | **MongoDB + Mongoose 9** | Database and ODM |
-| **Agora Access Token** | Secure token generation for video calls |
+| **WebRTC Session Auth** | Secure token generation for video calls |
 | **FFmpeg (fluent-ffmpeg)** | Video merging, audio extraction, grid layout |
 | **Backblaze B2** | Cloud object storage for recordings |
 | **JWT (jsonwebtoken)** | Authentication tokens |
@@ -134,7 +134,7 @@ Create an account and start recording immediately — no credit card required.
 ### External Services
 | Service | Purpose |
 |---|---|
-| **Agora.io** | WebRTC infrastructure for video calls |
+| **WebRTC** | Real-time communication infrastructure for video calls |
 | **Backblaze B2** | Affordable cloud storage for video files |
 | **Hugging Face** | Whisper ASR model for transcription |
 | **Google Gemini** | AI summaries and translation |
@@ -154,7 +154,7 @@ Create an account and start recording immediately — no credit card required.
 │  │  Page    │  │   Page    │  │  Page    │  │   Register)   │  │
 │  └────┬─────┘  └─────┬─────┘  └────┬─────┘  └───────┬───────┘  │
 │       │              │              │                │          │
-│       │         Agora RTC SDK       │                │          │
+│       │             WebRTC          │                │          │
 │       │      (Video/Audio Streams)  │                │          │
 └───────┼──────────────┼──────────────┼────────────────┼──────────┘
         │              │              │                │
@@ -291,7 +291,7 @@ ProcastMain/
 | **Git** | Latest |
 
 You will also need accounts on:
-- [**Agora.io**](https://www.agora.io/) — for real-time video communication
+- [**WebRTC**](https://webrtc.org/) — for real-time video communication
 - [**Backblaze B2**](https://www.backblaze.com/b2/) — for cloud video storage
 - [**Hugging Face**](https://huggingface.co/) — for Whisper transcription (free API)
 - [**Google AI Studio**](https://aistudio.google.com/) — for Gemini API key (free tier available)
@@ -333,7 +333,7 @@ MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>/<database>?retryWrites
 # ─── Authentication ─────────────────────────────────────
 JWT_SECRET=replace-with-a-long-random-secret
 
-# ─── Agora (Video Calls) ────────────────────────────────
+# ─── WebRTC (Video Calls) ───────────────────────────────
 AGORA_APP_ID=your-agora-app-id
 AGORA_APP_CERTIFICATE=your-agora-app-certificate
 
@@ -405,8 +405,8 @@ Then open [http://localhost:5173](http://localhost:5173) in your browser.
 | `GET` | `/api/sessions/recording-state/:id` | Private | Get current recording state |
 | `GET` | `/api/sessions/:id` | Private | Get session details & status |
 | `GET` | `/api/sessions/:id/participants` | Private | List session participants |
-| `POST` | `/api/sessions/:id/register-agora-uid` | Private | Map Agora UID to user |
-| `GET` | `/api/sessions/:id/agora-uid-mapping` | Private | Get UID → user mapping |
+| `POST` | `/api/sessions/:id/register-agora-uid` | Private | Map participant ID to user |
+| `GET` | `/api/sessions/:id/agora-uid-mapping` | Private | Get participant mapping |
 
 ### Uploads
 
@@ -430,11 +430,11 @@ Then open [http://localhost:5173](http://localhost:5173) in your browser.
 | `GET` | `/api/library/:fileId/stream` | Private | Stream a video inline |
 | `DELETE` | `/api/library/:fileId` | Private | Delete a recording |
 
-### Agora
+### WebRTC
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/agora/token` | Private | Generate Agora RTC token |
+| `GET` | `/api/agora/token` | Private | Generate WebRTC session token |
 
 ### Public
 
@@ -459,11 +459,11 @@ Then open [http://localhost:5173](http://localhost:5173) in your browser.
 ### Session
 | Field | Type | Description |
 |---|---|---|
-| `channelName` | String | Agora channel identifier |
+| `channelName` | String | WebRTC channel identifier |
 | `meetingCode` | String | 5-digit invite code |
 | `host` | ObjectId → User | Session creator |
 | `participants` | ObjectId[] → User | List of participants |
-| `agoraUidMap` | Array | Maps Agora UIDs to user profiles |
+| `agoraUidMap` | Array | Maps participant IDs to user profiles |
 | `participantFiles` | Map | userId → B2 file ID for individual videos |
 | `startTime` / `endTime` | Date | Session timing |
 | `status` | Enum | `LIVE` or `ENDED` |
